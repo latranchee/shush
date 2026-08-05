@@ -54,6 +54,7 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 | Command | Purpose |
 |---------|---------|
 | `set <name> [--from-stdin] [--force]` | Store a secret (secure prompt; `--force` to overwrite) |
+| `create <name> <value> [--force]` | One-liner store (value on the command line) |
 | `list` | List stored secret names (never values) |
 | `exists <name>` | Exit 0 if present, 1 if not |
 | `delete <name> [--if-exists]` | Remove a secret (`--if-exists` = idempotent) |
@@ -62,6 +63,10 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 `run` also accepts `--env-optional ENV_VAR=secret_name` for secrets that may
 legitimately be absent: the child still launches, with that variable unset and
 a warning on stderr. See `docs/commands.md` for full details.
+
+`create` is the quick one-liner (`shush create openai_api_key sk-...`) — handy
+for scripts, but the value lands in your shell history; use `set` when that
+matters.
 
 Secret names are lowercase snake_case: `openai_api_key`, `github_token`.
 
@@ -96,6 +101,9 @@ Full write-up: `docs/security_model.md`.
 ## Tests
 
 ```powershell
+# One-time: install Pester 5 (Windows ships with the incompatible 3.4.0)
+Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser -Force -SkipPublisherCheck
+
 # Unit tests (pure logic)
 Import-Module Pester -RequiredVersion 5.7.1 -Force
 Invoke-Pester -Path .\tests\ -Output Detailed

@@ -39,6 +39,7 @@ $pyFixture = Join-Path $fixtureDir 'read_secret.py'
 $credentialModule = Join-Path $toolDir 'modules\credential_store.psm1'
 
 $secretName = "e2e_secret_$([guid]::NewGuid().ToString('N'))"
+$createName = "e2e_create_$([guid]::NewGuid().ToString('N'))"
 $sentinel = "secret-manager-e2e:$([guid]::NewGuid().ToString('N'))"
 $encoded = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($sentinel))
 $updatedSentinel = "secret-manager-e2e-updated:$([guid]::NewGuid().ToString('N'))"
@@ -69,6 +70,26 @@ try {
     $overwriteOutput = $updatedEncoded | powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entryScript set $secretName --from-stdin --force 2>&1
     _check "set --force overwrites existing secret" ($LASTEXITCODE -eq 0) ($overwriteOutput -join "`n")
     _check "overwrite output reports update (not new)" (($overwriteOutput -join "`n") -like "*Updated existing secret*") ($overwriteOutput -join "`n")
+
+    $createOutput = powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entryScript create $createName $encoded 2>&1
+    _check "create stores one-liner secret" ($LASTEXITCODE -eq 0) ($createOutput -join "`n")
+    _check "create output does not include raw encoded secret" (-not (($createOutput -join "`n") -like "*$encoded*")) ''
+
+    $createNoValue = powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entryScript create $createName 2>&1
+    _check "create without value fails" ($LASTEXITCODE -ne 0) ($createNoValue -join "`n")
+
+    $duplicateCreate = powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entryScript create $createName $encoded 2>&1
+    _check "create without --force on existing secret fails" ($LASTEXITCODE -ne 0) ($duplicateCreate -join "`n")
+
+    $forceCreate = powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entryScript create $createName $updatedEncoded --force 2>&1
+    _check "create --force overwrites existing secret" ($LASTEXITCODE -eq 0) ($forceCreate -join "`n")
+    _check "create --force reports update" (($forceCreate -join "`n") -like "*Updated existing secret*") ($forceCreate -join "`n")
+
+    $createRunOutput = powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entryScript run powershell.exe -NoProfile -ExecutionPolicy Bypass -File $psFixture --env WHS_E2E_SECRET=$createName 2>&1
+    _check "created secret round-trips through run" (($createRunOutput -join "`n") -like "*ps_decoded=$updatedSentinel*") ($createRunOutput -join "`n")
+
+    $createDelete = powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entryScript delete $createName 2>&1
+    _check "delete removes created secret" ($LASTEXITCODE -eq 0) ($createDelete -join "`n")
 
     $listOutput = powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entryScript list 2>&1
     _check "list includes secret name" (($listOutput -join "`n") -like "*$secretName*") ''
@@ -109,15 +130,17 @@ try {
 }
 finally {
     if ($importsOk) {
-        try {
-            $cleanupResult = remove_secret_value -Name $secretName
-            if ($cleanupResult.success) {
-                # Cleanup removed a leftover; nothing else to do.
-            } elseif ($cleanupResult.error.code -ne 'NOT_FOUND') {
-                Write-Host "WARNING: cleanup of $secretName failed: $($cleanupResult.error.message)" -ForegroundColor Yellow
+        foreach ($leftover in @($secretName, $createName)) {
+            try {
+                $cleanupResult = remove_secret_value -Name $leftover
+                if ($cleanupResult.success) {
+                    # Cleanup removed a leftover; nothing else to do.
+                } elseif ($cleanupResult.error.code -ne 'NOT_FOUND') {
+                    Write-Host "WARNING: cleanup of $leftover failed: $($cleanupResult.error.message)" -ForegroundColor Yellow
+                }
+            } catch {
+                Write-Host "WARNING: cleanup threw: $_" -ForegroundColor Yellow
             }
-        } catch {
-            Write-Host "WARNING: cleanup threw: $_" -ForegroundColor Yellow
         }
     }
 }

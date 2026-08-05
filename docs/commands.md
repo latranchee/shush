@@ -36,6 +36,28 @@ Flags:
 single UTF-8 BOM if present, and trims exactly one trailing `\r?\n`. Running
 without redirection prints an error rather than blocking on EOF.
 
+## create
+
+Store a secret in one line, taking the value directly from the command line.
+
+```powershell
+.\secret_manager.ps1 create openai_api_key sk-abc123
+.\secret_manager.ps1 create openai_api_key sk-abc123 --force   # overwrite
+.\secret_manager.ps1 create my_token "value with spaces"       # quote spaces
+```
+
+Expected behavior:
+
+- Same name validation, existence pre-check, `--force` semantics, and
+  empty-value rejection as `set`.
+- Exactly one value argument; extra arguments are an error (quote values
+  containing spaces).
+- Output still never echoes the value back.
+
+Trade-off: the value appears in shell history and in the process command
+line while the command runs. Use `set` (secure prompt) or
+`set --from-stdin` (pipe) when that matters.
+
 ## Entry path
 
 The entry point is `secret_manager.ps1`. Both GNU-style `--double-dash`

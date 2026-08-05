@@ -72,11 +72,16 @@ Import-Module (Join-Path $moduleDir 'process_runner.psm1') -Force
 function show_usage {
     Write-Host "Usage:"
     Write-Host "  .\secret_manager.ps1 set <name> [--from-stdin] [--force]"
+    Write-Host "  .\secret_manager.ps1 create <name> <value> [--force]"
     Write-Host "  .\secret_manager.ps1 list"
     Write-Host "  .\secret_manager.ps1 exists <name>"
     Write-Host "  .\secret_manager.ps1 delete <name> [--if-exists]"
     Write-Host "  .\secret_manager.ps1 run <command> [args...] --env ENV_VAR=secret_name [--env-optional ENV_VAR=secret_name]"
     Write-Host ""
+    Write-Host "  set             prompts securely (or reads a pipe with --from-stdin)."
+    Write-Host "  create          one-liner: takes the value from the command line."
+    Write-Host "                  Convenient, but the value is visible in shell history"
+    Write-Host "                  and process listings; prefer 'set' for interactive use."
     Write-Host "  --env           required mapping; missing secret aborts before launch."
     Write-Host "  --env-optional  best-effort mapping; missing secret logs a warning"
     Write-Host "                  to stderr and the child launches with that env var unset."
@@ -125,7 +130,7 @@ function read_secret_from_stdin {
     return $value
 }
 
-function invoke_set_command {
+function assert_valid_secret_name_or_exit {
     if (-not $name) {
         Write-Host "ERROR: Missing secret name" -ForegroundColor Red
         exit 1
@@ -135,34 +140,34 @@ function invoke_set_command {
         Write-Host "ERROR: Invalid secret name '$name'. Use lowercase letters, digits, and underscores; start with a lowercase letter." -ForegroundColor Red
         exit 1
     }
+}
 
-    # Existence pre-check (without --force) BEFORE prompting, so a typed value
-    # is never discarded. With --force, we always prompt and overwrite.
-    if (-not $force) {
-        $existsResult = query_secret_exists -Name $name
-        if (-not $existsResult.success) {
-            Write-Host "ERROR: $($existsResult.error.message)" -ForegroundColor Red
-            Write-Host "       Use --force to overwrite anyway." -ForegroundColor Yellow
-            exit 1
-        }
-        if ($existsResult.data.exists) {
-            Write-Host "ERROR: Secret already exists: $name. Use --force to overwrite." -ForegroundColor Red
-            exit 1
-        }
+# Existence pre-check (without --force) BEFORE the value is acquired, so a
+# typed value is never discarded. With --force, we always overwrite.
+function assert_secret_slot_available_or_exit {
+    if ($force) { return }
+
+    $existsResult = query_secret_exists -Name $name
+    if (-not $existsResult.success) {
+        Write-Host "ERROR: $($existsResult.error.message)" -ForegroundColor Red
+        Write-Host "       Use --force to overwrite anyway." -ForegroundColor Yellow
+        exit 1
     }
-
-    $value = if ($from_stdin) {
-        read_secret_from_stdin
-    } else {
-        read_secret_from_secure_prompt -Name $name
+    if ($existsResult.data.exists) {
+        Write-Host "ERROR: Secret already exists: $name. Use --force to overwrite." -ForegroundColor Red
+        exit 1
     }
+}
 
-    if ([string]::IsNullOrEmpty($value)) {
+function store_secret_and_report {
+    param([string]$Value)
+
+    if ([string]::IsNullOrEmpty($Value)) {
         Write-Host "ERROR: Secret value is empty. Refusing to store empty secret for '$name'." -ForegroundColor Red
         exit 1
     }
 
-    $result = set_secret_value -Name $name -Value $value -Force:$force
+    $result = set_secret_value -Name $name -Value $Value -Force:$force
     if (-not $result.success) {
         Write-Host "ERROR: $($result.error.message)" -ForegroundColor Red
         exit 1
@@ -173,6 +178,36 @@ function invoke_set_command {
     } else {
         Write-Host "Stored new secret: $name"
     }
+}
+
+function invoke_set_command {
+    assert_valid_secret_name_or_exit
+    assert_secret_slot_available_or_exit
+
+    $value = if ($from_stdin) {
+        read_secret_from_stdin
+    } else {
+        read_secret_from_secure_prompt -Name $name
+    }
+
+    store_secret_and_report -Value $value
+}
+
+function invoke_create_command {
+    assert_valid_secret_name_or_exit
+
+    $rest = @($arguments | Where-Object { $null -ne $_ })
+    if ($rest.Count -lt 1) {
+        Write-Host "ERROR: Missing secret value. Usage: create <name> <value> [--force]" -ForegroundColor Red
+        exit 1
+    }
+    if ($rest.Count -gt 1) {
+        Write-Host "ERROR: Too many arguments for create. Quote values that contain spaces." -ForegroundColor Red
+        exit 1
+    }
+
+    assert_secret_slot_available_or_exit
+    store_secret_and_report -Value ([string]$rest[0])
 }
 
 function invoke_list_command {
@@ -280,6 +315,7 @@ if (-not $command -or $command -in @('-h', '--help', '/?', 'help')) {
 try {
     switch ($command.ToLowerInvariant()) {
         'set' { invoke_set_command }
+        'create' { invoke_create_command }
         'list' { invoke_list_command }
         'exists' { invoke_exists_command }
         'delete' { invoke_delete_command }

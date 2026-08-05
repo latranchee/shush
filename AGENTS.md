@@ -35,11 +35,12 @@ variables. Pure PowerShell, no external dependencies, no build step.
    .\secret_manager.ps1 set openai_api_key
    ```
 
-   Non-interactive alternative (value piped from a file or another tool,
+   Non-interactive alternatives (value piped from a file or another tool,
    never from chat history):
 
    ```powershell
    Get-Content key.txt | .\secret_manager.ps1 set openai_api_key --from-stdin
+   .\secret_manager.ps1 create openai_api_key sk-abc123   # one-liner; value visible in shell history
    ```
 
 5. Verify without exposing the value:
@@ -113,7 +114,12 @@ docs/                     # overview, architecture, commands, security model
 ## Testing
 
 ```powershell
-# Unit (requires Pester 5.7.1)
+# One-time setup: Windows ships Pester 3.4.0, which is incompatible.
+# Install Pester 5 for the current user (bootstraps the NuGet provider
+# on first use; answer yes / add -Force as below):
+Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser -Force -SkipPublisherCheck
+
+# Unit tests
 Import-Module Pester -RequiredVersion 5.7.1 -Force
 Invoke-Pester -Path .\tests\ -Output Detailed
 
