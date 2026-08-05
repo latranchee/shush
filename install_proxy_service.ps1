@@ -110,6 +110,13 @@ if (Test-Path $serviceConfigPath) {
     Write-Host "service_config.json already exists; it will be rewritten (re-run/repair)." -ForegroundColor Yellow
 }
 
+# The daemon must be able to bind the port; a stale user-session proxy on
+# the same port makes the task exit immediately with BIND_FAILED.
+$portBusy = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+if ($portBusy) {
+    fail "Port $Port is already in use. Stop the process listening on it (a previously started 'proxy start'?) and re-run. Finder: Get-CimInstance Win32_Process -Filter `"Name='powershell.exe'`" | Where-Object { `$_.CommandLine -like '*secret_manager.ps1*proxy*start*' }"
+}
+
 # The SID allowed to use the admin pipe: the user running this installer.
 # (UAC elevation keeps your identity, so this is you.)
 $allowedSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value

@@ -128,7 +128,7 @@ The proxy stops with Ctrl+C in its console, or:
 
 ```powershell
 Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
-  Where-Object { $_.CommandLine -like '*proxy*start*secret_manager*' } |
+  Where-Object { $_.CommandLine -like '*secret_manager.ps1*proxy*start*' } |
   ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
 ```
 
