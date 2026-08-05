@@ -106,7 +106,9 @@ Write-Host "  account: $AccountName   port: $Port   pipe: $PipeName"
 Write-Host ""
 
 if (-not (Test-Path $entryScript)) { fail "secret_manager.ps1 not found next to this installer" }
-if (Test-Path $serviceConfigPath) { fail "service_config.json already exists. Run with -Uninstall first, or delete it if stale." }
+if (Test-Path $serviceConfigPath) {
+    Write-Host "service_config.json already exists; it will be rewritten (re-run/repair)." -ForegroundColor Yellow
+}
 
 # The SID allowed to use the admin pipe: the user running this installer.
 # (UAC elevation keeps your identity, so this is you.)
@@ -185,8 +187,10 @@ $settings = New-ScheduledTaskSettingsSet `
     -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) `
     -MultipleInstances IgnoreNew
 
+# NOTE: must be machine-qualified; Register-ScheduledTask does not resolve
+# the ".\" prefix (fails with 0x80070534 "no mapping ... was done").
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
-    -Settings $settings -User ".\$AccountName" -Password $plainPassword `
+    -Settings $settings -User "$env:COMPUTERNAME\$AccountName" -Password $plainPassword `
     -RunLevel Limited | Out-Null
 $plainPassword = $null
 Write-Host "Registered scheduled task: $taskName (runs as $AccountName at startup)"
