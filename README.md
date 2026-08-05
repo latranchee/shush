@@ -69,6 +69,23 @@ a warning on stderr. See `docs/commands.md` for full details.
 for scripts, but the value lands in your shell history; use `set` when that
 matters.
 
+## Service mode: protect secrets from your own tools
+
+Everything above still leaves one gap: any process running as *you* (an AI
+agent, a stray npm script) can read your vault, because Windows scopes
+Credential Manager per user. Service mode closes it — secrets move to a
+dedicated hidden service account, the proxy daemon runs as that account,
+and your CLI keeps working unchanged through a **write-only** named pipe:
+`shush create/list/delete` still work; nothing can read a value back.
+
+```powershell
+# one elevated run: account + scheduled task + config + vault migration
+powershell -ExecutionPolicy Bypass -File .\install_proxy_service.ps1
+```
+
+Local copies are kept until you re-run with `-PurgeLocal`. Full design,
+threat model, and recovery notes: `docs/service_mode.md`.
+
 ## Proxy mode
 
 The strongest workflow: the client never holds the key at all. `shush proxy
@@ -129,6 +146,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\e2e_secret_manag
 
 # Proxy end-to-end (offline: throwaway secret + local echo upstream)
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\e2e_proxy.ps1
+
+# Admin-pipe end-to-end (service-mode plumbing, simulated same-user)
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\e2e_admin_pipe.ps1
 ```
 
 The e2e test stores, lists, overwrites, injects, and deletes a uniquely named
@@ -141,5 +161,6 @@ throwaway secret; it cleans up after itself and never touches your real keys.
 - `docs/commands.md` — full command reference
 - `docs/security_model.md` — what this does and does not protect against
 - `docs/proxy.md` — proxy mode: routing, config, controls
+- `docs/service_mode.md` — service mode: the same-user protection boundary
 - `AGENTS.md` — setup and conventions for AI coding agents
 - `.agents/skills/createProxy/SKILL.md` — guided proxy setup for one vault secret

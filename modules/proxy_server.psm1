@@ -9,6 +9,8 @@
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+Import-Module (Join-Path $PSScriptRoot 'admin_pipe.psm1')
+
 $script:validAuthModes = @('bearer', 'x-api-key', 'x-goog-api-key')
 $script:defaultAllowMethods = @('GET', 'POST')
 $script:allMethods = @('GET', 'POST', 'PUT', 'PATCH', 'DELETE')
@@ -443,7 +445,9 @@ function start_proxy_listener {
         [int]$Port,
         [hashtable]$Providers,
         [scriptblock]$ReadSecret,
-        [scriptblock]$CheckSecret = $null
+        [scriptblock]$CheckSecret = $null,
+        [string]$AdminPipeName = '',
+        [string]$AdminAllowedSid = ''
     )
 
     Add-Type -AssemblyName System.Net.Http
@@ -460,6 +464,24 @@ function start_proxy_listener {
         }
     }
 
+    $adminEnabled = -not [string]::IsNullOrEmpty($AdminPipeName)
+    $adminPipe = $null
+    if ($adminEnabled) {
+        if ([string]::IsNullOrEmpty($AdminAllowedSid)) {
+            try { $listener.Stop() } catch { }
+            return @{
+                success = $false; data = $null
+                error = @{ code = 'INVALID_PARAMS'; message = 'Admin pipe requires an allowed client SID' }
+            }
+        }
+        $pipeResult = new_admin_pipe_server -PipeName $AdminPipeName -AllowedSid $AdminAllowedSid
+        if (-not $pipeResult.success) {
+            try { $listener.Stop() } catch { }
+            return $pipeResult
+        }
+        $adminPipe = $pipeResult.data
+    }
+
     $client = [System.Net.Http.HttpClient]::new()
     $client.Timeout = [TimeSpan]::FromSeconds(300)
 
@@ -474,20 +496,60 @@ function start_proxy_listener {
         }
         Write-Host ("  {0,-12} -> {1}  (secret: {2}, auth: {3}) {4}" -f $providerName, $provider.base_url, $provider.secret, $provider.auth, $secretState)
     }
+    if ($adminEnabled) {
+        Write-Host "Admin pipe: \\.\pipe\$AdminPipeName (write-only; client SID $AdminAllowedSid)"
+    }
     Write-Host "Press Ctrl+C to stop."
 
     try {
+        $httpAsync = $listener.BeginGetContext($null, $null)
+        $pipeAsync = if ($adminEnabled) { $adminPipe.BeginWaitForConnection($null, $null) } else { $null }
+
         while ($listener.IsListening) {
-            $context = $listener.GetContext()
-            try {
-                handle_proxy_request -Context $context -Providers $Providers -ReadSecret $ReadSecret -HttpClient $client
-            } catch {
-                try { write_proxy_error_response -Response $context.Response -StatusCode 500 -Code 'INTERNAL_ERROR' -Message 'Proxy internal error' } catch { }
+            $handles = [System.Collections.Generic.List[System.Threading.WaitHandle]]::new()
+            $handles.Add($httpAsync.AsyncWaitHandle)
+            if ($adminEnabled) { $handles.Add($pipeAsync.AsyncWaitHandle) }
+
+            $signaled = [System.Threading.WaitHandle]::WaitAny($handles.ToArray())
+
+            if ($signaled -eq 0) {
+                $context = $listener.EndGetContext($httpAsync)
+                $httpAsync = $listener.BeginGetContext($null, $null)
+                try {
+                    handle_proxy_request -Context $context -Providers $Providers -ReadSecret $ReadSecret -HttpClient $client
+                } catch {
+                    try { write_proxy_error_response -Response $context.Response -StatusCode 500 -Code 'INTERNAL_ERROR' -Message 'Proxy internal error' } catch { }
+                }
+            } else {
+                try {
+                    $adminPipe.EndWaitForConnection($pipeAsync)
+                    $summary = handle_admin_connection -Pipe $adminPipe
+                    Write-Host "$(Get-Date -Format 'HH:mm:ss') admin $summary"
+                } catch {
+                    Write-Host "$(Get-Date -Format 'HH:mm:ss') admin connection error"
+                }
+                try { $adminPipe.Disconnect() } catch { }
+                try {
+                    $pipeAsync = $adminPipe.BeginWaitForConnection($null, $null)
+                } catch {
+                    # Pipe instance broke; recreate it.
+                    try { $adminPipe.Dispose() } catch { }
+                    $pipeResult = new_admin_pipe_server -PipeName $AdminPipeName -AllowedSid $AdminAllowedSid
+                    if ($pipeResult.success) {
+                        $adminPipe = $pipeResult.data
+                        $pipeAsync = $adminPipe.BeginWaitForConnection($null, $null)
+                    } else {
+                        Write-Host "WARNING: admin pipe lost and could not be recreated: $($pipeResult.error.message)"
+                        $adminEnabled = $false
+                        $pipeAsync = $null
+                    }
+                }
             }
         }
     }
     finally {
         try { $listener.Stop() } catch { }
+        if ($null -ne $adminPipe) { try { $adminPipe.Dispose() } catch { } }
         $client.Dispose()
     }
 

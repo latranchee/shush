@@ -23,6 +23,14 @@ param(
 
     [string]$config,
 
+    [switch]$local,
+
+    [Alias('admin-pipe')]
+    [string]$admin_pipe,
+
+    [Alias('allow-sid')]
+    [string]$allow_sid,
+
     [Parameter(ValueFromRemainingArguments=$true)]
     [string[]]$arguments
 )
@@ -72,6 +80,19 @@ if ($null -ne $arguments) {
                     $i += 1
                 } else { $consumed = $false; $tail += $tok }
             }
+            '^--local$' { $local = $true }
+            '^--admin-pipe$' {
+                if ($i + 1 -lt $rest.Count) {
+                    $admin_pipe = $rest[$i + 1]
+                    $i += 1
+                } else { $consumed = $false; $tail += $tok }
+            }
+            '^--allow-sid$' {
+                if ($i + 1 -lt $rest.Count) {
+                    $allow_sid = $rest[$i + 1]
+                    $i += 1
+                } else { $consumed = $false; $tail += $tok }
+            }
             default { $consumed = $false; $tail += $tok }
         }
         $i += 1
@@ -84,7 +105,31 @@ $moduleDir = Join-Path $scriptDir 'modules'
 
 Import-Module (Join-Path $moduleDir 'credential_store.psm1') -Force
 Import-Module (Join-Path $moduleDir 'process_runner.psm1') -Force
+Import-Module (Join-Path $moduleDir 'admin_pipe.psm1') -Force
 Import-Module (Join-Path $moduleDir 'proxy_server.psm1') -Force
+
+# Service mode: when service_config.json exists (written by
+# install_proxy_service.ps1), secrets live in the service account's vault
+# and management commands travel over the daemon's admin pipe instead of
+# touching the local vault. --local forces local-vault behavior.
+# SHUSH_SERVICE_CONFIG overrides the config path (used by tests).
+$serviceConfigPath = if ($env:SHUSH_SERVICE_CONFIG) { $env:SHUSH_SERVICE_CONFIG } else { Join-Path $scriptDir 'service_config.json' }
+$script:serviceConfig = $null
+if (Test-Path $serviceConfigPath) {
+    try {
+        $script:serviceConfig = Get-Content $serviceConfigPath -Raw | ConvertFrom-Json
+    } catch {
+        Write-Host "WARNING: service_config.json is unreadable; falling back to local vault." -ForegroundColor Yellow
+    }
+}
+
+function use_service_pipe {
+    return ($null -ne $script:serviceConfig) -and (-not $local)
+}
+
+function get_service_pipe_name {
+    return [string]$script:serviceConfig.pipe_name
+}
 
 function show_usage {
     Write-Host "Usage:"
@@ -104,6 +149,8 @@ function show_usage {
     Write-Host "  --env-optional  best-effort mapping; missing secret logs a warning"
     Write-Host "                  to stderr and the child launches with that env var unset."
     Write-Host "  --if-exists     for delete: exit 0 even when the secret is not present."
+    Write-Host "  --local         force local-vault behavior in service mode (see"
+    Write-Host "                  docs/service_mode.md; no effect otherwise)."
     Write-Host "  proxy start     localhost credential-injecting proxy: clients call"
     Write-Host "                  http://127.0.0.1:<port>/<provider>/<path> and the vault"
     Write-Host "                  key is injected upstream; the client never sees it."
@@ -171,7 +218,12 @@ function assert_valid_secret_name_or_exit {
 function assert_secret_slot_available_or_exit {
     if ($force) { return }
 
-    $existsResult = query_secret_exists -Name $name
+    $existsResult = if (use_service_pipe) {
+        send_admin_request -PipeName (get_service_pipe_name) -Request @{ op = 'exists'; name = $name }
+    } else {
+        query_secret_exists -Name $name
+    }
+
     if (-not $existsResult.success) {
         Write-Host "ERROR: $($existsResult.error.message)" -ForegroundColor Red
         Write-Host "       Use --force to overwrite anyway." -ForegroundColor Yellow
@@ -191,7 +243,12 @@ function store_secret_and_report {
         exit 1
     }
 
-    $result = set_secret_value -Name $name -Value $Value -Force:$force
+    $result = if (use_service_pipe) {
+        send_admin_request -PipeName (get_service_pipe_name) -Request @{ op = 'create'; name = $name; value = $Value; force = [bool]$force }
+    } else {
+        set_secret_value -Name $name -Value $Value -Force:$force
+    }
+
     if (-not $result.success) {
         Write-Host "ERROR: $($result.error.message)" -ForegroundColor Red
         exit 1
@@ -235,7 +292,11 @@ function invoke_create_command {
 }
 
 function invoke_list_command {
-    $result = get_secret_names
+    $result = if (use_service_pipe) {
+        send_admin_request -PipeName (get_service_pipe_name) -Request @{ op = 'list' }
+    } else {
+        get_secret_names
+    }
     if (-not $result.success) {
         Write-Host "ERROR: $($result.error.message)" -ForegroundColor Red
         exit 1
@@ -256,7 +317,11 @@ function invoke_delete_command {
         exit 1
     }
 
-    $result = remove_secret_value -Name $name
+    $result = if (use_service_pipe) {
+        send_admin_request -PipeName (get_service_pipe_name) -Request @{ op = 'delete'; name = $name }
+    } else {
+        remove_secret_value -Name $name
+    }
     if (-not $result.success) {
         if ($if_exists -and $result.error.code -eq 'NOT_FOUND') {
             Write-Host "Secret not present (idempotent delete): $name"
@@ -280,7 +345,11 @@ function invoke_exists_command {
         exit 1
     }
 
-    $result = query_secret_exists -Name $name
+    $result = if (use_service_pipe) {
+        send_admin_request -PipeName (get_service_pipe_name) -Request @{ op = 'exists'; name = $name }
+    } else {
+        query_secret_exists -Name $name
+    }
     if (-not $result.success) {
         Write-Host "ERROR: $($result.error.message)" -ForegroundColor Red
         exit 1
@@ -317,6 +386,11 @@ function invoke_run_command {
 
     if (-not $resolved.success) {
         Write-Host "ERROR: $($resolved.error.message)" -ForegroundColor Red
+        if ((use_service_pipe) -and $resolved.error.code -eq 'NOT_FOUND') {
+            Write-Host "       Service mode: secrets in the service vault cannot be injected as env vars." -ForegroundColor Yellow
+            Write-Host "       Use the proxy (http://127.0.0.1:$($script:serviceConfig.port)/<provider>/...) instead," -ForegroundColor Yellow
+            Write-Host "       or store a local copy with: secret_manager.ps1 set <name> --local" -ForegroundColor Yellow
+        }
         exit 1
     }
 
@@ -359,7 +433,18 @@ function invoke_proxy_command {
         Write-Host "Loaded provider config: $configPath"
     }
 
+    # Admin pipe: explicit flags win (test harnesses); otherwise service
+    # mode config enables it (daemon runs as the service account, clients
+    # connect as the installing user).
+    $pipeName = $admin_pipe
+    $pipeSid = $allow_sid
+    if (-not $pipeName -and ($null -ne $script:serviceConfig)) {
+        $pipeName = [string]$script:serviceConfig.pipe_name
+        $pipeSid = [string]$script:serviceConfig.allowed_sid
+    }
+
     $result = start_proxy_listener -Port $port -Providers $providers `
+        -AdminPipeName $pipeName -AdminAllowedSid $pipeSid `
         -ReadSecret {
             param($secretName)
             get_secret_value -Name $secretName

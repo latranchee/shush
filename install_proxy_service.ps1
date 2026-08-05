@@ -1,0 +1,261 @@
+#Requires -RunAsAdministrator
+# install_proxy_service.ps1
+# One-shot setup for shush service mode:
+#   1. Creates a dedicated local account (hidden from the login screen)
+#      whose vault will hold the secrets.
+#   2. Registers a scheduled task that runs the proxy daemon as that
+#      account at startup (Task Scheduler grants the batch-logon right).
+#   3. Writes service_config.json so the CLI routes management commands
+#      through the daemon's write-only admin pipe.
+#   4. Migrates every secret from YOUR vault into the service vault.
+#
+# After install, agents and CLI tools running as you can MANAGE secrets
+# (create/list/delete) but can never read a value back: values leave the
+# service vault only as auth headers injected into outbound provider
+# requests by the proxy.
+#
+# Local copies of migrated secrets are KEPT by default; pass -PurgeLocal
+# to delete them after successful migration (that is what actually
+# removes same-user read access).
+#
+# Run under Windows PowerShell 5.1 (powershell.exe), elevated.
+
+param(
+    [string]$AccountName = 'shush_svc',
+    [int]$Port = 8765,
+    [string]$PipeName = 'shush_admin',
+    [securestring]$ExistingPassword,
+    [switch]$SkipMigration,
+    [switch]$PurgeLocal,
+    [switch]$Uninstall,
+    [switch]$RemoveAccount,
+    [switch]$NoPause
+)
+
+$ErrorActionPreference = 'Stop'
+
+$toolRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$entryScript = Join-Path $toolRoot 'secret_manager.ps1'
+$moduleDir = Join-Path $toolRoot 'modules'
+$serviceConfigPath = Join-Path $toolRoot 'service_config.json'
+$taskName = 'shush_proxy'
+
+Import-Module (Join-Path $moduleDir 'credential_store.psm1') -Force
+Import-Module (Join-Path $moduleDir 'admin_pipe.psm1') -Force
+
+function pause_before_exit {
+    param([int]$Code)
+    if (-not $NoPause) {
+        Write-Host ""
+        Read-Host "Press Enter to close" | Out-Null
+    }
+    exit $Code
+}
+
+function fail {
+    param([string]$Message)
+    Write-Host "ERROR: $Message" -ForegroundColor Red
+    pause_before_exit 1
+}
+
+# ---------------------------------------------------------------- uninstall
+if ($Uninstall) {
+    Write-Host "=== shush service mode uninstall ===" -ForegroundColor Cyan
+
+    $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    if ($task) {
+        Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+        Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
+        Write-Host "Removed scheduled task: $taskName"
+    } else {
+        Write-Host "Scheduled task not found (already removed): $taskName"
+    }
+
+    if (Test-Path $serviceConfigPath) {
+        Remove-Item $serviceConfigPath -Force -Confirm:$false
+        Write-Host "Removed service_config.json (CLI back to local vault)"
+    }
+
+    if ($RemoveAccount) {
+        $account = Get-LocalUser -Name $AccountName -ErrorAction SilentlyContinue
+        if ($account) {
+            Write-Host ""
+            Write-Host "WARNING: deleting '$AccountName' PERMANENTLY DESTROYS every secret" -ForegroundColor Yellow
+            Write-Host "in its vault (DPAPI keys die with the account)." -ForegroundColor Yellow
+            $answer = Read-Host "Type the account name to confirm deletion"
+            if ($answer -ceq $AccountName) {
+                Remove-LocalUser -Name $AccountName
+                $regPath = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList'
+                Remove-ItemProperty -Path $regPath -Name $AccountName -ErrorAction SilentlyContinue
+                Write-Host "Removed account: $AccountName"
+            } else {
+                Write-Host "Account NOT removed (confirmation mismatch)."
+            }
+        }
+    } else {
+        Write-Host "Account '$AccountName' kept (its vault survives; use -RemoveAccount to delete)."
+    }
+
+    Write-Host "Uninstall complete." -ForegroundColor Green
+    pause_before_exit 0
+}
+
+# ------------------------------------------------------------------ install
+Write-Host "=== shush service mode install ===" -ForegroundColor Cyan
+Write-Host "  account: $AccountName   port: $Port   pipe: $PipeName"
+Write-Host ""
+
+if (-not (Test-Path $entryScript)) { fail "secret_manager.ps1 not found next to this installer" }
+if (Test-Path $serviceConfigPath) { fail "service_config.json already exists. Run with -Uninstall first, or delete it if stale." }
+
+# The SID allowed to use the admin pipe: the user running this installer.
+# (UAC elevation keeps your identity, so this is you.)
+$allowedSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$allowedName = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+Write-Host "Pipe access will be granted to: $allowedName ($allowedSid)"
+
+# --- 1. service account ---------------------------------------------------
+$existingAccount = Get-LocalUser -Name $AccountName -ErrorAction SilentlyContinue
+$plainPassword = $null
+
+if ($existingAccount) {
+    if (-not $ExistingPassword) {
+        fail "Account '$AccountName' already exists. Re-run with -ExistingPassword (Read-Host -AsSecureString) or pick another -AccountName."
+    }
+    $plainPassword = [Runtime.InteropServices.Marshal]::PtrToStringBSTR(
+        [Runtime.InteropServices.Marshal]::SecureStringToBSTR($ExistingPassword))
+    Write-Host "Using existing account: $AccountName"
+} else {
+    # Random 24-byte password. Shown ONCE below; it is intentionally not
+    # stored anywhere machine-readable (a recoverable password would let
+    # same-user code log on as the service account and read the vault).
+    $randomBytes = New-Object byte[] 24
+    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($randomBytes)
+    $plainPassword = [Convert]::ToBase64String($randomBytes)
+    $securePassword = ConvertTo-SecureString $plainPassword -AsPlainText -Force
+
+    New-LocalUser -Name $AccountName -Password $securePassword `
+        -Description 'shush secret vault service account' `
+        -PasswordNeverExpires -AccountNeverExpires | Out-Null
+    Write-Host "Created account: $AccountName"
+
+    # Keep the login screen clean.
+    $regPath = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList'
+    if (-not (Test-Path $regPath)) { New-Item -Path $regPath -Force | Out-Null }
+    New-ItemProperty -Path $regPath -Name $AccountName -Value 0 -PropertyType DWord -Force | Out-Null
+
+    Write-Host ""
+    Write-Host "  +----------------------------------------------------------------+" -ForegroundColor Yellow
+    Write-Host "  |  SAVE THIS PASSWORD in your password manager. It is shown once  |" -ForegroundColor Yellow
+    Write-Host "  |  and needed only to re-register the task on this machine.      |" -ForegroundColor Yellow
+    Write-Host "  |  (An admin password RESET would destroy the service vault.)    |" -ForegroundColor Yellow
+    Write-Host "  +----------------------------------------------------------------+" -ForegroundColor Yellow
+    Write-Host "  $AccountName password: $plainPassword" -ForegroundColor Yellow
+    Write-Host ""
+}
+
+# --- 2. filesystem access for the service account -------------------------
+& icacls $toolRoot /grant "${AccountName}:(OI)(CI)RX" | Out-Null
+Write-Host "Granted read access on $toolRoot to $AccountName"
+
+# --- 3. service_config.json (read by daemon AND client CLI) ---------------
+@{
+    mode = 'service'
+    account = $AccountName
+    allowed_sid = $allowedSid
+    port = $Port
+    pipe_name = $PipeName
+} | ConvertTo-Json | Set-Content $serviceConfigPath -Encoding ascii
+Write-Host "Wrote service_config.json"
+
+# --- 4. scheduled task running the daemon as the service account ----------
+$existingTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+if ($existingTask) {
+    Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
+}
+
+$action = New-ScheduledTaskAction -Execute 'powershell.exe' `
+    -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$entryScript`" proxy start --port $Port" `
+    -WorkingDirectory $toolRoot
+$trigger = New-ScheduledTaskTrigger -AtStartup
+$settings = New-ScheduledTaskSettingsSet `
+    -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+    -ExecutionTimeLimit ([TimeSpan]::Zero) `
+    -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) `
+    -MultipleInstances IgnoreNew
+
+Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
+    -Settings $settings -User ".\$AccountName" -Password $plainPassword `
+    -RunLevel Limited | Out-Null
+$plainPassword = $null
+Write-Host "Registered scheduled task: $taskName (runs as $AccountName at startup)"
+
+Start-ScheduledTask -TaskName $taskName
+Write-Host "Started daemon; waiting for the admin pipe..."
+
+$pipeUp = $false
+$deadline = (Get-Date).AddSeconds(30)
+while ((Get-Date) -lt $deadline) {
+    $ping = send_admin_request -PipeName $PipeName -TimeoutMs 1500 -Request @{ op = 'ping' }
+    if ($ping.success) { $pipeUp = $true; break }
+    Start-Sleep -Milliseconds 500
+}
+if (-not $pipeUp) {
+    Write-Host "Daemon did not come up. Check: Get-ScheduledTaskInfo $taskName" -ForegroundColor Red
+    fail "Admin pipe unreachable after 30s. service_config.json left in place for debugging."
+}
+Write-Host "Admin pipe is up." -ForegroundColor Green
+
+# --- 5. vault migration ---------------------------------------------------
+if (-not $SkipMigration) {
+    Write-Host ""
+    Write-Host "Migrating your local vault into the service vault..."
+    $migration = invoke_vault_migration -PipeName $PipeName
+
+    foreach ($name in @($migration.data.migrated)) {
+        Write-Host "  migrated: $name" -ForegroundColor Green
+    }
+    foreach ($failure in @($migration.data.failed)) {
+        Write-Host "  FAILED:   $($failure.name) ($($failure.error))" -ForegroundColor Red
+    }
+    Write-Host "Migration: $(@($migration.data.migrated).Count)/$($migration.data.total) migrated."
+
+    if ($PurgeLocal) {
+        if (-not $migration.success) {
+            Write-Host "Skipping purge: migration was not fully successful." -ForegroundColor Yellow
+        } else {
+            Write-Host ""
+            Write-Host "Purging local copies (verifying each in the service vault first)..."
+            foreach ($name in @($migration.data.migrated)) {
+                $check = send_admin_request -PipeName $PipeName -Request @{ op = 'exists'; name = $name }
+                if ($check.success -and $check.data.exists) {
+                    $removal = remove_secret_value -Name $name
+                    if ($removal.success) {
+                        Write-Host "  purged local: $name"
+                    } else {
+                        Write-Host "  purge FAILED: $name ($($removal.error.message))" -ForegroundColor Red
+                    }
+                } else {
+                    Write-Host "  NOT purged (service copy unverified): $name" -ForegroundColor Yellow
+                }
+            }
+        }
+    } else {
+        Write-Host ""
+        Write-Host "Local copies were KEPT. Agents running as you can still read those." -ForegroundColor Yellow
+        Write-Host "When you are confident everything works, purge them with:" -ForegroundColor Yellow
+        Write-Host "  .\secret_manager.ps1 list --local" -ForegroundColor Yellow
+        Write-Host "  .\secret_manager.ps1 delete <name> --local" -ForegroundColor Yellow
+        Write-Host "or re-run this installer with -PurgeLocal." -ForegroundColor Yellow
+    }
+}
+
+# --- summary --------------------------------------------------------------
+Write-Host ""
+Write-Host "=== Service mode is active ===" -ForegroundColor Green
+Write-Host "  Proxy:   http://127.0.0.1:$Port/<provider>/<path>"
+Write-Host "  Manage:  .\secret_manager.ps1 create|set|list|exists|delete  (via admin pipe)"
+Write-Host "  Local:   add --local to any command to touch YOUR vault instead"
+Write-Host "  Undo:    .\install_proxy_service.ps1 -Uninstall"
+pause_before_exit 0

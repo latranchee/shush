@@ -90,6 +90,22 @@ Built-in providers: `openai`, `anthropic`, `gemini`. Custom providers go in
 workflow (pick a vault secret, configure, start, verify) follow
 `.agents/skills/createProxy/SKILL.md`.
 
+## Service mode (secrets you cannot read)
+
+If `service_config.json` exists next to `secret_manager.ps1`, the machine
+runs in service mode: secrets live in a dedicated service account's vault,
+and CLI commands route through a write-only named pipe automatically. What
+this means for you as an agent:
+
+- `create/set/list/exists/delete` work exactly as documented above.
+- **You cannot obtain a secret value by any means** - there is no read
+  operation, and the vault belongs to a different Windows identity. Do not
+  attempt workarounds; use the proxy for API calls.
+- `run` only sees the user's local vault (`--local` scope). If a secret is
+  service-side, call the provider through the proxy instead.
+- Setup/teardown is `install_proxy_service.ps1` (needs elevation - ask the
+  user to run it). Full docs: `docs/service_mode.md`.
+
 ## Hard rules when working in this repo
 
 - **Never print, log, or write a secret value** — not to stdout, stderr,
@@ -106,18 +122,22 @@ workflow (pick a vault secret, configure, start, verify) follow
 
 ```text
 secret_manager.ps1        # CLI entry point (set/create/list/exists/delete/run/proxy)
+install_proxy_service.ps1 # service-mode installer (account, task, migration)
 modules/
   credential_store.psm1   # Win32 CredRead/CredWrite/CredDelete/CredEnumerate
   process_runner.psm1     # env-mapping parsing + scrubbed child launch
   proxy_server.psm1       # localhost credential-injecting proxy
+  admin_pipe.psm1         # write-only named-pipe admin channel (service mode)
 tests/
   credential_store.Tests.ps1   # Pester unit tests
   process_runner.Tests.ps1     # Pester unit tests
   proxy_server.Tests.ps1       # Pester unit tests (routing, config, headers)
+  admin_pipe.Tests.ps1         # Pester unit tests (protocol, write-only ops)
   e2e_secret_manager.ps1       # full round-trip against the real vault
   e2e_proxy.ps1                # proxy round-trip via a local echo upstream
+  e2e_admin_pipe.ps1           # service-mode pipe round-trip (same-user sim)
   fixtures/                    # child-process + echo-server fixtures
-docs/                     # overview, architecture, commands, security model, proxy
+docs/                     # overview, architecture, commands, security, proxy, service mode
 .agents/skills/           # agent skills (createProxy)
 ```
 
