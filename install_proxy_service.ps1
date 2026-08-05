@@ -173,6 +173,14 @@ if ($existingAccount) {
 & icacls $toolRoot /grant "${AccountName}:(OI)(CI)RX" | Out-Null
 Write-Host "Granted read access on $toolRoot to $AccountName"
 
+# Daemon log location: the account needs write access here, and the log is
+# the only way to see why a task-hosted daemon failed to start.
+$logsDir = Join-Path $toolRoot 'logs'
+if (-not (Test-Path $logsDir)) { New-Item -ItemType Directory -Path $logsDir | Out-Null }
+& icacls $logsDir /grant "${AccountName}:(OI)(CI)M" | Out-Null
+$daemonLog = Join-Path $logsDir 'daemon.log'
+Write-Host "Daemon log: $daemonLog"
+
 # --- 3. service_config.json (read by daemon AND client CLI) ---------------
 @{
     mode = 'service'
@@ -190,8 +198,10 @@ if ($existingTask) {
     Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
 }
 
-$action = New-ScheduledTaskAction -Execute 'powershell.exe' `
-    -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$entryScript`" proxy start --port $Port" `
+# cmd.exe wrapper so daemon stdout/stderr land in the log file - without it
+# a failing daemon is invisible (task output goes nowhere).
+$action = New-ScheduledTaskAction -Execute 'cmd.exe' `
+    -Argument "/c powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$entryScript`" proxy start --port $Port >> `"$daemonLog`" 2>&1" `
     -WorkingDirectory $toolRoot
 $trigger = New-ScheduledTaskTrigger -AtStartup
 $settings = New-ScheduledTaskSettingsSet `
@@ -219,7 +229,14 @@ while ((Get-Date) -lt $deadline) {
     Start-Sleep -Milliseconds 500
 }
 if (-not $pipeUp) {
-    Write-Host "Daemon did not come up. Check: Get-ScheduledTaskInfo $taskName" -ForegroundColor Red
+    Write-Host "Daemon did not come up." -ForegroundColor Red
+    if (Test-Path $daemonLog) {
+        Write-Host "--- last 25 lines of $daemonLog ---" -ForegroundColor Yellow
+        Get-Content $daemonLog -Tail 25 | ForEach-Object { Write-Host "  $_" }
+    } else {
+        Write-Host "No daemon.log was written - the task itself failed to launch." -ForegroundColor Yellow
+        Write-Host "Check: Get-ScheduledTaskInfo $taskName (LastTaskResult)" -ForegroundColor Yellow
+    }
     fail "Admin pipe unreachable after 30s. service_config.json left in place for debugging."
 }
 Write-Host "Admin pipe is up." -ForegroundColor Green

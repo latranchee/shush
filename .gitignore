@@ -1,3 +1,4 @@
 *.log
 proxy.json
 service_config.json
+logs/
