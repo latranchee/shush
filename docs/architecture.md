@@ -17,9 +17,15 @@ secret_manager.ps1
     |   Windows Credential Manager
     |
     +--> modules/process_runner.psm1
+    |       |
+    |       v
+    |   Child process with temporary env vars
+    |
+    +--> modules/proxy_server.psm1
             |
             v
-        Child process with temporary env vars
+        Localhost HTTP proxy -> provider API
+        (credential injected upstream; see proxy.md)
 ```
 
 ## Storage Layer
@@ -103,12 +109,20 @@ shush/
   modules/
     credential_store.psm1
     process_runner.psm1
+    proxy_server.psm1
   tests/
     credential_store.Tests.ps1
     process_runner.Tests.ps1
+    proxy_server.Tests.ps1
     e2e_secret_manager.ps1
+    e2e_proxy.ps1
     fixtures/
       read_secret.ps1
       read_secret.py
+      echo_server.ps1
+  .agents/
+    skills/
+      createProxy/
+        SKILL.md
 ```
 

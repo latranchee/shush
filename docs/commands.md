@@ -134,6 +134,17 @@ Expected behavior:
 - Return the child command exit code.
 - Do not print resolved values.
 
+## proxy
+
+Start the localhost credential-injecting proxy. Clients call providers by
+name and the vault key is injected upstream; the client never sees it.
+
+```powershell
+.\secret_manager.ps1 proxy start [--port 8765] [--config proxy.json]
+```
+
+Full reference (routing, config format, controls, errors): `proxy.md`.
+
 ## Recommended Provider Setup
 
 ```powershell

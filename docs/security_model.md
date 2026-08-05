@@ -52,13 +52,17 @@ Use `run` for tools that require environment variables:
 
 This keeps the secret out of the repo and avoids persistent `.env` files.
 
-## Future Stronger Workflow
+## Stronger Workflow: Proxy Mode
 
-A local proxy can reduce exposure further by keeping the raw API key out of the
-agent/tool environment. In that model, the agent requests an allowed API call by
-secret name, and the proxy injects the credential into the outbound HTTP
-request.
+The local proxy reduces exposure further by keeping the raw API key out of the
+agent/tool environment entirely. The agent addresses an allowed provider by
+name, and the proxy injects the credential into the outbound HTTPS request —
+the agent receives the API response, never the key. Client-supplied credential
+headers are stripped, the listener binds localhost only, and logs are redacted.
 
-That model is documented separately in `proxy_future.md` and should come after
-the basic Credential Manager runner is working.
+```powershell
+.\secret_manager.ps1 proxy start
+```
+
+See `proxy.md` for the full design and controls.
 

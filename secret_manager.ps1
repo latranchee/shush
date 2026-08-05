@@ -19,6 +19,10 @@ param(
     [Alias('env-optional')]
     [string[]]$secret_env_optional,
 
+    [int]$port = 8765,
+
+    [string]$config,
+
     [Parameter(ValueFromRemainingArguments=$true)]
     [string[]]$arguments
 )
@@ -56,6 +60,18 @@ if ($null -ne $arguments) {
                     $i += 1
                 } else { $consumed = $false; $tail += $tok }
             }
+            '^--port$' {
+                if ($i + 1 -lt $rest.Count) {
+                    $port = [int]$rest[$i + 1]
+                    $i += 1
+                } else { $consumed = $false; $tail += $tok }
+            }
+            '^--config$' {
+                if ($i + 1 -lt $rest.Count) {
+                    $config = $rest[$i + 1]
+                    $i += 1
+                } else { $consumed = $false; $tail += $tok }
+            }
             default { $consumed = $false; $tail += $tok }
         }
         $i += 1
@@ -68,6 +84,7 @@ $moduleDir = Join-Path $scriptDir 'modules'
 
 Import-Module (Join-Path $moduleDir 'credential_store.psm1') -Force
 Import-Module (Join-Path $moduleDir 'process_runner.psm1') -Force
+Import-Module (Join-Path $moduleDir 'proxy_server.psm1') -Force
 
 function show_usage {
     Write-Host "Usage:"
@@ -77,6 +94,7 @@ function show_usage {
     Write-Host "  .\secret_manager.ps1 exists <name>"
     Write-Host "  .\secret_manager.ps1 delete <name> [--if-exists]"
     Write-Host "  .\secret_manager.ps1 run <command> [args...] --env ENV_VAR=secret_name [--env-optional ENV_VAR=secret_name]"
+    Write-Host "  .\secret_manager.ps1 proxy start [--port 8765] [--config proxy.json]"
     Write-Host ""
     Write-Host "  set             prompts securely (or reads a pipe with --from-stdin)."
     Write-Host "  create          one-liner: takes the value from the command line."
@@ -86,6 +104,12 @@ function show_usage {
     Write-Host "  --env-optional  best-effort mapping; missing secret logs a warning"
     Write-Host "                  to stderr and the child launches with that env var unset."
     Write-Host "  --if-exists     for delete: exit 0 even when the secret is not present."
+    Write-Host "  proxy start     localhost credential-injecting proxy: clients call"
+    Write-Host "                  http://127.0.0.1:<port>/<provider>/<path> and the vault"
+    Write-Host "                  key is injected upstream; the client never sees it."
+    Write-Host "                  Built-in providers: openai, anthropic, gemini."
+    Write-Host "                  Optional proxy.json (next to this script) adds/overrides"
+    Write-Host "                  providers; see docs/proxy.md."
 }
 
 function read_secret_from_secure_prompt {
@@ -307,6 +331,50 @@ function invoke_run_command {
     exit ([int]$result.data.exit_code)
 }
 
+function invoke_proxy_command {
+    if ($name -ne 'start') {
+        Write-Host "ERROR: Unknown proxy subcommand '$name'. Usage: proxy start [--port 8765] [--config proxy.json]" -ForegroundColor Red
+        exit 1
+    }
+
+    $providers = get_default_providers
+
+    $configPath = $config
+    if (-not $configPath) {
+        $defaultConfig = Join-Path $scriptDir 'proxy.json'
+        if (Test-Path $defaultConfig) { $configPath = $defaultConfig }
+    }
+
+    if ($configPath) {
+        if (-not (Test-Path $configPath)) {
+            Write-Host "ERROR: Proxy config not found: $configPath" -ForegroundColor Red
+            exit 1
+        }
+        $parsed = parse_proxy_config -Json (Get-Content $configPath -Raw)
+        if (-not $parsed.success) {
+            Write-Host "ERROR: $($parsed.error.message)" -ForegroundColor Red
+            exit 1
+        }
+        $providers = merge_provider_maps -Defaults $providers -Overrides $parsed.data
+        Write-Host "Loaded provider config: $configPath"
+    }
+
+    $result = start_proxy_listener -Port $port -Providers $providers `
+        -ReadSecret {
+            param($secretName)
+            get_secret_value -Name $secretName
+        } `
+        -CheckSecret {
+            param($secretName)
+            test_secret_exists -Name $secretName
+        }
+
+    if (-not $result.success) {
+        Write-Host "ERROR: $($result.error.message)" -ForegroundColor Red
+        exit 1
+    }
+}
+
 if (-not $command -or $command -in @('-h', '--help', '/?', 'help')) {
     show_usage
     exit 0
@@ -320,6 +388,7 @@ try {
         'exists' { invoke_exists_command }
         'delete' { invoke_delete_command }
         'run' { invoke_run_command }
+        'proxy' { invoke_proxy_command }
         default {
             Write-Host "Unknown command: $command" -ForegroundColor Red
             show_usage

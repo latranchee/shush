@@ -59,6 +59,7 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 | `exists <name>` | Exit 0 if present, 1 if not |
 | `delete <name> [--if-exists]` | Remove a secret (`--if-exists` = idempotent) |
 | `run <cmd> [args...] --env ENV_VAR=secret_name` | Launch a command with secrets injected |
+| `proxy start [--port 8765] [--config proxy.json]` | Localhost proxy that injects keys upstream — clients never see them |
 
 `run` also accepts `--env-optional ENV_VAR=secret_name` for secrets that may
 legitimately be absent: the child still launches, with that variable unset and
@@ -67,6 +68,21 @@ a warning on stderr. See `docs/commands.md` for full details.
 `create` is the quick one-liner (`shush create openai_api_key sk-...`) — handy
 for scripts, but the value lands in your shell history; use `set` when that
 matters.
+
+## Proxy mode
+
+The strongest workflow: the client never holds the key at all. `shush proxy
+start` listens on `127.0.0.1` only; clients call
+`http://127.0.0.1:8765/<provider>/<path>` and the proxy injects the vault key
+into the outbound HTTPS request (client-supplied credential headers are
+stripped). Built-in providers: `openai`, `anthropic`, `gemini`; add your own
+via `proxy.json`. Details in `docs/proxy.md`, guided setup in
+`.agents/skills/createProxy/SKILL.md`.
+
+```powershell
+.\secret_manager.ps1 proxy start
+Invoke-RestMethod http://127.0.0.1:8765/openai/v1/models   # no key on the client
+```
 
 Secret names are lowercase snake_case: `openai_api_key`, `github_token`.
 
@@ -110,6 +126,9 @@ Invoke-Pester -Path .\tests\ -Output Detailed
 
 # End-to-end (round-trips a throwaway secret through the real vault)
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\e2e_secret_manager.ps1
+
+# Proxy end-to-end (offline: throwaway secret + local echo upstream)
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\e2e_proxy.ps1
 ```
 
 The e2e test stores, lists, overwrites, injects, and deletes a uniquely named
@@ -121,5 +140,6 @@ throwaway secret; it cleans up after itself and never touches your real keys.
 - `docs/architecture.md` — storage / runner / CLI layers
 - `docs/commands.md` — full command reference
 - `docs/security_model.md` — what this does and does not protect against
-- `docs/proxy_future.md` — future proxy mode design (not implemented)
+- `docs/proxy.md` — proxy mode: routing, config, controls
 - `AGENTS.md` — setup and conventions for AI coding agents
+- `.agents/skills/createProxy/SKILL.md` — guided proxy setup for one vault secret

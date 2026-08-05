@@ -75,6 +75,21 @@ Note: the child's environment is **scrubbed** to an OS-essential whitelist
 another inherited env var, it won't see it — declare it or run the tool
 directly.
 
+## Proxy mode (agent never holds the key)
+
+For the strongest isolation, don't inject the key at all — route API calls
+through the localhost proxy and let it inject the credential upstream:
+
+```powershell
+.\secret_manager.ps1 proxy start        # binds 127.0.0.1:8765 only
+Invoke-RestMethod http://127.0.0.1:8765/openai/v1/models
+```
+
+Built-in providers: `openai`, `anthropic`, `gemini`. Custom providers go in
+`proxy.json` (gitignored). Reference: `docs/proxy.md`. For the full guided
+workflow (pick a vault secret, configure, start, verify) follow
+`.agents/skills/createProxy/SKILL.md`.
+
 ## Hard rules when working in this repo
 
 - **Never print, log, or write a secret value** — not to stdout, stderr,
@@ -90,16 +105,20 @@ directly.
 ## Layout
 
 ```text
-secret_manager.ps1        # CLI entry point (set/list/exists/delete/run)
+secret_manager.ps1        # CLI entry point (set/create/list/exists/delete/run/proxy)
 modules/
   credential_store.psm1   # Win32 CredRead/CredWrite/CredDelete/CredEnumerate
   process_runner.psm1     # env-mapping parsing + scrubbed child launch
+  proxy_server.psm1       # localhost credential-injecting proxy
 tests/
   credential_store.Tests.ps1   # Pester unit tests
   process_runner.Tests.ps1     # Pester unit tests
+  proxy_server.Tests.ps1       # Pester unit tests (routing, config, headers)
   e2e_secret_manager.ps1       # full round-trip against the real vault
-  fixtures/                    # child-process fixtures used by the e2e
-docs/                     # overview, architecture, commands, security model
+  e2e_proxy.ps1                # proxy round-trip via a local echo upstream
+  fixtures/                    # child-process + echo-server fixtures
+docs/                     # overview, architecture, commands, security model, proxy
+.agents/skills/           # agent skills (createProxy)
 ```
 
 ## Storage details
@@ -124,10 +143,19 @@ Import-Module Pester -RequiredVersion 5.7.1 -Force
 Invoke-Pester -Path .\tests\ -Output Detailed
 
 # End-to-end: creates a uniquely named throwaway secret in the real vault,
-# exercises set/list/exists/run/delete, cleans up after itself. Safe to run
-# on a machine with real secrets — it never reads or modifies them.
+# exercises set/create/list/exists/run/delete, cleans up after itself. Safe
+# to run on a machine with real secrets — it never reads or modifies them.
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\e2e_secret_manager.ps1
+
+# Proxy end-to-end: offline — throwaway secret + local echo upstream; proves
+# credential injection, client-auth stripping, limits, and log redaction.
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\e2e_proxy.ps1
 ```
 
-Run the e2e after any change to `secret_manager.ps1` or `modules/`. Python
-e2e checks are skipped automatically if no Python interpreter is installed.
+Run both e2e scripts after any change to `secret_manager.ps1` or `modules/`.
+Python e2e checks are skipped automatically if no Python interpreter is
+installed.
+
+Gotcha: keep code strings pure ASCII. Windows PowerShell 5.1 reads BOM-less
+UTF-8 as ANSI, and multi-byte characters (em dashes, curly quotes) inside
+double-quoted strings can decode into quote characters that break parsing.
