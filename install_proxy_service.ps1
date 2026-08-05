@@ -58,6 +58,51 @@ function fail {
     pause_before_exit 1
 }
 
+# Scheduled tasks with a stored password use BATCH logon; plain local
+# accounts do not have that right by default (Task Scheduler's auto-grant
+# is not reliable when registering via the cmdlet). Grant it via secedit,
+# which works on all editions including Home.
+function grant_batch_logon_right {
+    param([string]$Sid)
+
+    $workDir = Join-Path $env:TEMP "shush_secedit_$([guid]::NewGuid().ToString('N').Substring(0,8))"
+    New-Item -ItemType Directory -Path $workDir | Out-Null
+    try {
+        $exportCfg = Join-Path $workDir 'export.inf'
+        $applyDb = Join-Path $workDir 'apply.sdb'
+        & secedit /export /cfg $exportCfg /quiet | Out-Null
+        if (-not (Test-Path $exportCfg)) {
+            Write-Host "WARNING: secedit export failed; cannot verify batch-logon right." -ForegroundColor Yellow
+            return
+        }
+
+        $lines = Get-Content $exportCfg
+        $rightLine = $lines | Where-Object { $_ -match '^SeBatchLogonRight' } | Select-Object -First 1
+
+        if ($rightLine -and $rightLine -match [regex]::Escape($Sid)) {
+            Write-Host "Batch-logon right already granted."
+            return
+        }
+
+        if ($rightLine) {
+            $updated = "$rightLine,*$Sid"
+            $lines = $lines | ForEach-Object { if ($_ -eq $rightLine) { $updated } else { $_ } }
+        } else {
+            $lines = $lines | ForEach-Object {
+                if ($_ -match '^\[Privilege Rights\]') { @($_, "SeBatchLogonRight = *$Sid") } else { $_ }
+            }
+        }
+
+        $applyCfg = Join-Path $workDir 'apply.inf'
+        Set-Content $applyCfg $lines -Encoding unicode
+        & secedit /configure /db $applyDb /cfg $applyCfg /areas USER_RIGHTS /quiet | Out-Null
+        Write-Host "Granted 'Log on as a batch job' right."
+    }
+    finally {
+        Remove-Item -Recurse -Force $workDir -Confirm:$false -ErrorAction SilentlyContinue
+    }
+}
+
 # ---------------------------------------------------------------- uninstall
 if ($Uninstall) {
     Write-Host "=== shush service mode uninstall ===" -ForegroundColor Cyan
@@ -169,6 +214,9 @@ if ($existingAccount) {
     Write-Host ""
 }
 
+$accountSid = (Get-LocalUser -Name $AccountName).SID.Value
+grant_batch_logon_right -Sid $accountSid
+
 # --- 2. filesystem access for the service account -------------------------
 & icacls $toolRoot /grant "${AccountName}:(OI)(CI)RX" | Out-Null
 Write-Host "Granted read access on $toolRoot to $AccountName"
@@ -220,6 +268,18 @@ Write-Host "Registered scheduled task: $taskName (runs as $AccountName at startu
 
 Start-ScheduledTask -TaskName $taskName
 Write-Host "Started daemon; waiting for the admin pipe..."
+Start-Sleep -Seconds 2
+
+$taskInfo = Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction SilentlyContinue
+if ($taskInfo -and $taskInfo.LastTaskResult -notin @(0, 0x41301, 0x41303)) {
+    $code = $taskInfo.LastTaskResult
+    $hint = switch ($code) {
+        2147943785 { "the account lacks 'Log on as a batch job' (0x80070569) - the right grant above may need a reboot to take effect" }
+        2147943726 { "wrong password for $AccountName (0x8007052E) - re-run and enter the saved password exactly" }
+        default { "LastTaskResult 0x{0:X}" -f $code }
+    }
+    Write-Host "Task launch problem: $hint" -ForegroundColor Yellow
+}
 
 $pipeUp = $false
 $deadline = (Get-Date).AddSeconds(30)
