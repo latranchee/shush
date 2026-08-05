@@ -122,10 +122,16 @@ $plainPassword = $null
 
 if ($existingAccount) {
     if (-not $ExistingPassword) {
-        fail "Account '$AccountName' already exists. Re-run with -ExistingPassword (Read-Host -AsSecureString) or pick another -AccountName."
+        # Prompt here rather than requiring a parameter: SecureString cannot
+        # survive `powershell -File` argument passing (stringified).
+        Write-Host "Account '$AccountName' already exists (re-run/repair)."
+        $ExistingPassword = Read-Host "Enter the $AccountName password you saved at first install" -AsSecureString
     }
     $plainPassword = [Runtime.InteropServices.Marshal]::PtrToStringBSTR(
         [Runtime.InteropServices.Marshal]::SecureStringToBSTR($ExistingPassword))
+    if ([string]::IsNullOrEmpty($plainPassword)) {
+        fail "Empty password. Re-run and enter the saved $AccountName password."
+    }
     Write-Host "Using existing account: $AccountName"
 } else {
     # Random 24-byte password. Shown ONCE below; it is intentionally not
