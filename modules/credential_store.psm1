@@ -4,6 +4,9 @@
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+# COMPAT: legacy prefix from shush's origin project. Do NOT rename - every
+# stored secret lives under this target, and the origin tool still shares
+# the same vault namespace on machines that have both.
 $script:credentialTargetPrefix = 'windows-helper-scripts/secret_manager/'
 # CRED_PERSIST_LOCAL_MACHINE: per-user-on-this-machine, persisted across sessions.
 $script:credentialPersistLocalMachine = 2
@@ -15,7 +18,7 @@ $script:credentialMaxBlobSize = 2560
 $script:errNotFound = 1168
 
 function initialize_credential_native {
-    if ('Whs.SecretManager.CredentialNative' -as [type]) {
+    if ('Shush.SecretManager.CredentialNative' -as [type]) {
         return
     }
 
@@ -23,7 +26,7 @@ function initialize_credential_native {
 using System;
 using System.Runtime.InteropServices;
 
-namespace Whs.SecretManager {
+namespace Shush.SecretManager {
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     public struct CREDENTIAL {
         public UInt32 Flags;
@@ -135,7 +138,7 @@ function query_secret_exists {
 
     initialize_credential_native
     $credentialPtr = [IntPtr]::Zero
-    $ok = [Whs.SecretManager.CredentialNative]::CredRead($targetResult.target, $script:credentialTypeGeneric, 0, [ref]$credentialPtr)
+    $ok = [Shush.SecretManager.CredentialNative]::CredRead($targetResult.target, $script:credentialTypeGeneric, 0, [ref]$credentialPtr)
     if (-not $ok) {
         $err = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
         if ($err -eq $script:errNotFound) {
@@ -153,7 +156,7 @@ function query_secret_exists {
     }
 
     if ($credentialPtr -ne [IntPtr]::Zero) {
-        [Whs.SecretManager.CredentialNative]::CredFree($credentialPtr)
+        [Shush.SecretManager.CredentialNative]::CredFree($credentialPtr)
     }
     return @{ success = $true; data = @{ exists = $true; win32 = 0 }; error = $null }
 }
@@ -193,6 +196,9 @@ function set_secret_value {
 
     # Cross-process named mutex serializes the no-Force existence check + write
     # against concurrent setters of the same name (TOCTOU mitigation).
+    # COMPAT: keep the legacy "whs_secret_" mutex name - the origin tool uses
+    # the same name, and both must contend on ONE mutex to guard the shared
+    # vault namespace.
     $mutex = [System.Threading.Mutex]::new($false, "Global\whs_secret_$Name")
     $mutexHeld = $false
     $wasOverwritten = $false
@@ -232,11 +238,11 @@ function set_secret_value {
         $blob = [System.Runtime.InteropServices.Marshal]::AllocCoTaskMem($bytes.Length)
         [System.Runtime.InteropServices.Marshal]::Copy($bytes, 0, $blob, $bytes.Length)
 
-        $credential = [Whs.SecretManager.CREDENTIAL]::new()
+        $credential = [Shush.SecretManager.CREDENTIAL]::new()
         $credential.Flags = 0
         $credential.Type = $script:credentialTypeGeneric
         $credential.TargetName = $target
-        $credential.Comment = 'windows-helper-scripts secret_manager'
+        $credential.Comment = 'shush secret manager'
         $credential.CredentialBlobSize = $bytes.Length
         $credential.CredentialBlob = $blob
         $credential.Persist = $script:credentialPersistLocalMachine
@@ -246,7 +252,7 @@ function set_secret_value {
         # Stable audit identity, independent of the writer's logon name.
         $credential.UserName = 'secret_manager'
 
-        $ok = [Whs.SecretManager.CredentialNative]::CredWrite([ref]$credential, 0)
+        $ok = [Shush.SecretManager.CredentialNative]::CredWrite([ref]$credential, 0)
         if (-not $ok) {
             $err = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
             return @{
@@ -294,7 +300,7 @@ function get_secret_value {
     initialize_credential_native
     $credentialPtr = [IntPtr]::Zero
 
-    $ok = [Whs.SecretManager.CredentialNative]::CredRead($target, $script:credentialTypeGeneric, 0, [ref]$credentialPtr)
+    $ok = [Shush.SecretManager.CredentialNative]::CredRead($target, $script:credentialTypeGeneric, 0, [ref]$credentialPtr)
     if (-not $ok) {
         $err = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
         if ($err -eq $script:errNotFound) {
@@ -317,7 +323,7 @@ function get_secret_value {
 
     $bytes = $null
     try {
-        $credential = [System.Runtime.InteropServices.Marshal]::PtrToStructure($credentialPtr, [type][Whs.SecretManager.CREDENTIAL])
+        $credential = [System.Runtime.InteropServices.Marshal]::PtrToStructure($credentialPtr, [type][Shush.SecretManager.CREDENTIAL])
         $blobSize = [int]$credential.CredentialBlobSize
         if (($blobSize % 2) -ne 0) {
             return @{
@@ -336,7 +342,7 @@ function get_secret_value {
             [Array]::Clear($bytes, 0, $bytes.Length)
         }
         if ($credentialPtr -ne [IntPtr]::Zero) {
-            [Whs.SecretManager.CredentialNative]::CredFree($credentialPtr)
+            [Shush.SecretManager.CredentialNative]::CredFree($credentialPtr)
         }
     }
 }
@@ -360,7 +366,7 @@ function remove_secret_value {
 
     initialize_credential_native
 
-    $ok = [Whs.SecretManager.CredentialNative]::CredDelete($target, $script:credentialTypeGeneric, 0)
+    $ok = [Shush.SecretManager.CredentialNative]::CredDelete($target, $script:credentialTypeGeneric, 0)
     if (-not $ok) {
         $err = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
         if ($err -eq $script:errNotFound) {
@@ -389,7 +395,7 @@ function get_secret_names {
 
     $count = [UInt32]0
     $credentialPtrs = [IntPtr]::Zero
-    $ok = [Whs.SecretManager.CredentialNative]::CredEnumerate("$script:credentialTargetPrefix*", 0, [ref]$count, [ref]$credentialPtrs)
+    $ok = [Shush.SecretManager.CredentialNative]::CredEnumerate("$script:credentialTargetPrefix*", 0, [ref]$count, [ref]$credentialPtrs)
 
     if (-not $ok) {
         $err = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
@@ -412,7 +418,7 @@ function get_secret_names {
         for ($i = 0; $i -lt $count; $i++) {
             $itemPtr = [System.Runtime.InteropServices.Marshal]::ReadIntPtr($credentialPtrs, $i * [IntPtr]::Size)
             if ($itemPtr -eq [IntPtr]::Zero) { continue }
-            $credential = [System.Runtime.InteropServices.Marshal]::PtrToStructure($itemPtr, [type][Whs.SecretManager.CREDENTIAL])
+            $credential = [System.Runtime.InteropServices.Marshal]::PtrToStructure($itemPtr, [type][Shush.SecretManager.CREDENTIAL])
             $name = get_secret_name_from_target -Target $credential.TargetName
             # Only return names that round-trip through our validator; foreign
             # credentials sharing the prefix would be un-deletable via this tool.
@@ -425,7 +431,7 @@ function get_secret_names {
     }
     finally {
         if ($credentialPtrs -ne [IntPtr]::Zero) {
-            [Whs.SecretManager.CredentialNative]::CredFree($credentialPtrs)
+            [Shush.SecretManager.CredentialNative]::CredFree($credentialPtrs)
         }
     }
 }

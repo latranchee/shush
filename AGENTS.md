@@ -148,7 +148,9 @@ docs/                     # overview, architecture, commands, security, proxy, s
 ## Storage details
 
 - Credential Manager target: `windows-helper-scripts/secret_manager/<name>`
-  (generic credential; the prefix is the tool's stable namespace).
+  (generic credential). The prefix is a frozen legacy namespace from the
+  project shush was extracted from - never rename it, or every stored
+  secret becomes unreachable.
 - Persist scope: local machine, **per Windows user SID** — a secret stored
   by the interactive user is invisible to `LocalSystem` services.
 - Value limit: 2560 bytes (Windows credential blob limit).

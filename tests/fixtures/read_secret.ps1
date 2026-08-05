@@ -1,8 +1,8 @@
 $ErrorActionPreference = 'Stop'
 
-$encoded = $env:WHS_E2E_SECRET
+$encoded = $env:SHUSH_E2E_SECRET
 if (-not $encoded) {
-    Write-Error 'WHS_E2E_SECRET is missing'
+    Write-Error 'SHUSH_E2E_SECRET is missing'
     exit 2
 }
 

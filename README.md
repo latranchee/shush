@@ -122,8 +122,8 @@ Secret names are lowercase snake_case: `openai_api_key`, `github_token`.
 
 - Secrets live in Windows Credential Manager under the target prefix
   `windows-helper-scripts/secret_manager/<name>` (visible in the Credential
-  Manager UI; the prefix is a stable namespace, kept for compatibility with
-  earlier installs).
+  Manager UI). The prefix is a legacy namespace from the project shush was
+  extracted from; it is frozen so existing vault entries stay reachable.
 - Entries are scoped **per Windows user** (DPAPI): a secret stored by your
   interactive user is not visible to services running as `LocalSystem`.
 - `run` scrubs the inherited environment down to an OS-essential whitelist

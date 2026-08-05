@@ -97,7 +97,7 @@ try {
     _check "create --force overwrites existing secret" ($LASTEXITCODE -eq 0) ($forceCreate -join "`n")
     _check "create --force reports update" (($forceCreate -join "`n") -like "*Updated existing secret*") ($forceCreate -join "`n")
 
-    $createRunOutput = powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entryScript run powershell.exe -NoProfile -ExecutionPolicy Bypass -File $psFixture --env WHS_E2E_SECRET=$createName 2>&1
+    $createRunOutput = powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entryScript run powershell.exe -NoProfile -ExecutionPolicy Bypass -File $psFixture --env SHUSH_E2E_SECRET=$createName 2>&1
     _check "created secret round-trips through run" (($createRunOutput -join "`n") -like "*ps_decoded=$updatedSentinel*") ($createRunOutput -join "`n")
 
     $createDelete = powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entryScript delete $createName 2>&1
@@ -113,14 +113,14 @@ try {
     _check "exists does not include raw encoded secret" (-not (($existsOutput -join "`n") -like "*$encoded*")) ''
     _check "exists does not include decoded sentinel" (-not (($existsOutput -join "`n") -like "*$sentinel*")) ''
 
-    $psOutput = powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entryScript run powershell.exe -NoProfile -ExecutionPolicy Bypass -File $psFixture --env WHS_E2E_SECRET=$secretName 2>&1
+    $psOutput = powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entryScript run powershell.exe -NoProfile -ExecutionPolicy Bypass -File $psFixture --env SHUSH_E2E_SECRET=$secretName 2>&1
     _check "PowerShell fixture run succeeds" ($LASTEXITCODE -eq 0) ($psOutput -join "`n")
     _check "PowerShell fixture decodes overwritten secret" (($psOutput -join "`n") -like "*ps_decoded=$updatedSentinel*") ($psOutput -join "`n")
     _check "PowerShell wrapper does not print raw encoded secret" (-not (($psOutput -join "`n") -like "*$updatedEncoded*")) ''
 
     $pythonExe = resolve_python_executable
     if ($pythonExe -and (Test-Path $pythonExe)) {
-        $pyOutput = powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entryScript run $pythonExe $pyFixture --env WHS_E2E_SECRET=$secretName 2>&1
+        $pyOutput = powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entryScript run $pythonExe $pyFixture --env SHUSH_E2E_SECRET=$secretName 2>&1
         _check "Python fixture run succeeds" ($LASTEXITCODE -eq 0) ($pyOutput -join "`n")
         _check "Python fixture decodes overwritten secret" (($pyOutput -join "`n") -like "*py_decoded=$updatedSentinel*") ($pyOutput -join "`n")
         _check "Python wrapper does not print raw encoded secret" (-not (($pyOutput -join "`n") -like "*$updatedEncoded*")) ''
