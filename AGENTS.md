@@ -16,16 +16,16 @@ variables. Pure PowerShell, no external dependencies, no build step.
 2. Clone and smoke-test:
 
    ```powershell
-   git clone https://github.com/latranchee/windows-secret-manager.git
-   cd windows-secret-manager
+   git clone https://github.com/latranchee/shush.git
+   cd shush
    powershell -NoProfile -ExecutionPolicy Bypass -File .\secret_manager.ps1 help
    ```
 
-3. If they want `secret_manager` callable from anywhere, add an alias to
-   their PowerShell profile:
+3. If they want `shush` callable from anywhere, add an alias to their
+   PowerShell profile:
 
    ```powershell
-   Add-Content $PROFILE "`nSet-Alias secrets `"$PWD\secret_manager.ps1`""
+   Add-Content $PROFILE "`nSet-Alias shush `"$PWD\secret_manager.ps1`""
    ```
 
 4. Store the user's first secret. **The user must type the value themselves**

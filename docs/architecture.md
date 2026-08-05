@@ -90,7 +90,7 @@ github_token
 ## File Layout
 
 ```text
-windows-secret-manager/
+shush/
   secret_manager.ps1
   README.md
   AGENTS.md

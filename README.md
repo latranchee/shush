@@ -1,4 +1,4 @@
-# windows-secret-manager
+# shush 🤫
 
 Local Windows API-key manager for developer tools, AI agents, and scripts.
 
@@ -22,8 +22,8 @@ in `.env` files, project folders, or shell history.
 ## Install
 
 ```powershell
-git clone https://github.com/latranchee/windows-secret-manager.git
-cd windows-secret-manager
+git clone https://github.com/latranchee/shush.git
+cd shush
 .\secret_manager.ps1 help
 ```
 
@@ -31,7 +31,14 @@ That's it — there is nothing to build or install system-wide. Optionally add
 the repo folder to your `PATH` or create a profile alias:
 
 ```powershell
-Set-Alias secrets "C:\path\to\windows-secret-manager\secret_manager.ps1"
+Set-Alias shush "C:\path\to\shush\secret_manager.ps1"
+```
+
+Then from anywhere:
+
+```powershell
+shush set openai_api_key
+shush run codex --env OPENAI_API_KEY=openai_api_key
 ```
 
 If script execution is blocked on your machine, either run once with
