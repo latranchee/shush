@@ -57,7 +57,7 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 | Command | Purpose |
 |---------|---------|
 | `set <name> [--from-stdin] [--force]` | Store a secret (secure prompt; `--force` to overwrite) |
-| `create <name> <value> [--force]` | One-liner store (value on the command line) |
+| `create <name> [<value>] [--force]` | One-liner store; omit the value for a secure prompt |
 | `list` | List stored secret names (never values) |
 | `exists <name>` | Exit 0 if present, 1 if not |
 | `delete <name> [--if-exists]` | Remove a secret (`--if-exists` = idempotent) |

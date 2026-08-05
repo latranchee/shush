@@ -134,7 +134,7 @@ function get_service_pipe_name {
 function show_usage {
     Write-Host "Usage:"
     Write-Host "  .\secret_manager.ps1 set <name> [--from-stdin] [--force]"
-    Write-Host "  .\secret_manager.ps1 create <name> <value> [--force]"
+    Write-Host "  .\secret_manager.ps1 create <name> [<value>] [--force]"
     Write-Host "  .\secret_manager.ps1 list"
     Write-Host "  .\secret_manager.ps1 exists <name>"
     Write-Host "  .\secret_manager.ps1 delete <name> [--if-exists]"
@@ -142,9 +142,10 @@ function show_usage {
     Write-Host "  .\secret_manager.ps1 proxy start [--port 8765] [--config proxy.json]"
     Write-Host ""
     Write-Host "  set             prompts securely (or reads a pipe with --from-stdin)."
-    Write-Host "  create          one-liner: takes the value from the command line."
-    Write-Host "                  Convenient, but the value is visible in shell history"
-    Write-Host "                  and process listings; prefer 'set' for interactive use."
+    Write-Host "  create          one-liner: takes the value from the command line;"
+    Write-Host "                  omit the value to get a secure prompt instead."
+    Write-Host "                  Inline values are visible in shell history and"
+    Write-Host "                  process listings; prompt or pipe when that matters."
     Write-Host "  --env           required mapping; missing secret aborts before launch."
     Write-Host "  --env-optional  best-effort mapping; missing secret logs a warning"
     Write-Host "                  to stderr and the child launches with that env var unset."
@@ -278,17 +279,24 @@ function invoke_create_command {
     assert_valid_secret_name_or_exit
 
     $rest = @($arguments | Where-Object { $null -ne $_ })
-    if ($rest.Count -lt 1) {
-        Write-Host "ERROR: Missing secret value. Usage: create <name> <value> [--force]" -ForegroundColor Red
-        exit 1
-    }
     if ($rest.Count -gt 1) {
         Write-Host "ERROR: Too many arguments for create. Quote values that contain spaces." -ForegroundColor Red
         exit 1
     }
 
     assert_secret_slot_available_or_exit
-    store_secret_and_report -Value ([string]$rest[0])
+
+    # Value inline for one-liners; without it, fall back to the same
+    # secure acquisition paths as `set`.
+    $value = if ($rest.Count -eq 1) {
+        [string]$rest[0]
+    } elseif ($from_stdin) {
+        read_secret_from_stdin
+    } else {
+        read_secret_from_secure_prompt -Name $name
+    }
+
+    store_secret_and_report -Value $value
 }
 
 function invoke_list_command {

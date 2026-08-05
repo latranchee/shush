@@ -38,20 +38,23 @@ without redirection prints an error rather than blocking on EOF.
 
 ## create
 
-Store a secret in one line, taking the value directly from the command line.
+Store a secret in one line, taking the value directly from the command
+line. Omit the value and it prompts securely, exactly like `set`.
 
 ```powershell
 .\secret_manager.ps1 create openai_api_key sk-abc123
 .\secret_manager.ps1 create openai_api_key sk-abc123 --force   # overwrite
 .\secret_manager.ps1 create my_token "value with spaces"       # quote spaces
+.\secret_manager.ps1 create my_token                           # secure prompt
 ```
 
 Expected behavior:
 
 - Same name validation, existence pre-check, `--force` semantics, and
   empty-value rejection as `set`.
-- Exactly one value argument; extra arguments are an error (quote values
-  containing spaces).
+- At most one value argument; extra arguments are an error (quote values
+  containing spaces). No value argument falls back to the secure prompt
+  (or stdin with `--from-stdin`).
 - Output still never echoes the value back.
 
 Trade-off: the value appears in shell history and in the process command

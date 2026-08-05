@@ -10,6 +10,10 @@ $ErrorActionPreference = 'Stop'
 $script:exitCode = 0
 $script:checks = @()
 
+# This suite tests LOCAL vault + proxy behavior. Pin the CLI and daemon to
+# local mode even when the machine is in service mode.
+$env:SHUSH_SERVICE_CONFIG = Join-Path $env:TEMP "shush_e2e_no_service_$([guid]::NewGuid().ToString('N').Substring(0,8)).json"
+
 function _check {
     param([string]$Name, [bool]$Ok, [string]$Detail = '')
     $tag = if ($Ok) { '[PASS]' } else { '[FAIL]' }

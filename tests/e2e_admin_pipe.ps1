@@ -51,6 +51,12 @@ try {
     Import-Module $credentialModule -Force
     $importsOk = $true
 
+    # Pin to the synthetic config path from the start so neither the daemon
+    # nor CLI children pick up a real machine service_config.json. The file
+    # does not exist yet, so the daemon starts config-less (test flags below
+    # provide the pipe); CLI calls run after the file is written.
+    $env:SHUSH_SERVICE_CONFIG = $serviceConfigPath
+
     # Daemon runs as the current user with the pipe enabled via test flags.
     $daemonProcess = Start-Process powershell.exe -ArgumentList @(
         '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $entryScript,

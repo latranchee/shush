@@ -6,6 +6,10 @@ $ErrorActionPreference = 'Stop'
 $script:exitCode = 0
 $script:checks = @()
 
+# This suite tests LOCAL vault behavior. Pin the CLI (and every child it
+# spawns) to local mode even when the machine is in service mode.
+$env:SHUSH_SERVICE_CONFIG = Join-Path $env:TEMP "shush_e2e_no_service_$([guid]::NewGuid().ToString('N').Substring(0,8)).json"
+
 function _check {
     param([string]$Name, [bool]$Ok, [string]$Detail = '')
     $tag = if ($Ok) { '[PASS]' } else { '[FAIL]' }
@@ -75,8 +79,16 @@ try {
     _check "create stores one-liner secret" ($LASTEXITCODE -eq 0) ($createOutput -join "`n")
     _check "create output does not include raw encoded secret" (-not (($createOutput -join "`n") -like "*$encoded*")) ''
 
-    $createNoValue = powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entryScript create $createName 2>&1
-    _check "create without value fails" ($LASTEXITCODE -ne 0) ($createNoValue -join "`n")
+    # Without an inline value, create falls back to prompting; with piped
+    # empty input that yields an empty value, which is refused.
+    $createNoValue = '' | powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entryScript create "$($createName)_prompted" --from-stdin 2>&1
+    _check "create with empty prompted value fails" ($LASTEXITCODE -ne 0) ($createNoValue -join "`n")
+
+    $promptedName = "$($createName)_prompted"
+    $promptedCreate = $encoded | powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entryScript create $promptedName --from-stdin 2>&1
+    _check "create without inline value reads stdin like set" ($LASTEXITCODE -eq 0) ($promptedCreate -join "`n")
+    $promptedDelete = powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entryScript delete $promptedName --if-exists 2>&1
+    _check "prompted-create secret cleaned up" ($LASTEXITCODE -eq 0) ($promptedDelete -join "`n")
 
     $duplicateCreate = powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entryScript create $createName $encoded 2>&1
     _check "create without --force on existing secret fails" ($LASTEXITCODE -ne 0) ($duplicateCreate -join "`n")
