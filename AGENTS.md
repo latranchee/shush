@@ -21,11 +21,15 @@ variables. Pure PowerShell, no external dependencies, no build step.
    powershell -NoProfile -ExecutionPolicy Bypass -File .\secret_manager.ps1 help
    ```
 
-3. If they want `shush` callable from anywhere, add an alias to their
-   PowerShell profile:
+3. Make `shush` callable from anywhere by putting the repo folder on the
+   user PATH (the bundled `shush.cmd` shim handles dispatch; new shells
+   pick it up):
 
    ```powershell
-   Add-Content $PROFILE "`nSet-Alias shush `"$PWD\secret_manager.ps1`""
+   [Environment]::SetEnvironmentVariable('Path',
+     ([Environment]::GetEnvironmentVariable('Path','User').TrimEnd(';') + ';' + $PWD),
+     'User')
+   $env:Path += ";$PWD"   # current shell too
    ```
 
 4. Store the user's first secret. **The user must type the value themselves**

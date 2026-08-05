@@ -27,14 +27,17 @@ cd shush
 .\secret_manager.ps1 help
 ```
 
-That's it — there is nothing to build or install system-wide. Optionally add
-the repo folder to your `PATH` or create a profile alias:
+That's it — there is nothing to build or install system-wide. To get the
+`shush` command in every shell, add the repo folder to your user `PATH`
+(the bundled `shush.cmd` shim does the rest):
 
 ```powershell
-Set-Alias shush "C:\path\to\shush\secret_manager.ps1"
+[Environment]::SetEnvironmentVariable('Path',
+  ([Environment]::GetEnvironmentVariable('Path','User').TrimEnd(';') + ';' + $PWD),
+  'User')
 ```
 
-Then from anywhere:
+Then from anywhere (new shells):
 
 ```powershell
 shush set openai_api_key
