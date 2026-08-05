@@ -151,15 +151,27 @@ Write-Host "  account: $AccountName   port: $Port   pipe: $PipeName"
 Write-Host ""
 
 if (-not (Test-Path $entryScript)) { fail "secret_manager.ps1 not found next to this installer" }
+
+# Maintenance mode: when the service daemon is already up and healthy, a
+# re-run (e.g. for -PurgeLocal) skips account/task setup entirely.
+$alreadyRunning = $false
 if (Test-Path $serviceConfigPath) {
-    Write-Host "service_config.json already exists; it will be rewritten (re-run/repair)." -ForegroundColor Yellow
+    $existingPing = send_admin_request -PipeName $PipeName -TimeoutMs 1500 -Request @{ op = 'ping' }
+    if ($existingPing.success) {
+        $alreadyRunning = $true
+        Write-Host "Service daemon already running and healthy - maintenance mode (skipping account/task setup)." -ForegroundColor Green
+    } else {
+        Write-Host "service_config.json already exists; it will be rewritten (re-run/repair)." -ForegroundColor Yellow
+    }
 }
+
+if (-not $alreadyRunning) {
 
 # The daemon must be able to bind the port; a stale user-session proxy on
 # the same port makes the task exit immediately with BIND_FAILED.
 $portBusy = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
 if ($portBusy) {
-    fail "Port $Port is already in use. Stop the process listening on it (a previously started 'proxy start'?) and re-run. Finder: Get-CimInstance Win32_Process -Filter `"Name='powershell.exe'`" | Where-Object { `$_.CommandLine -like '*secret_manager.ps1*proxy*start*' }"
+    fail "Port $Port is already in use but the admin pipe is not answering. Stop the process listening on it (a previously started 'proxy start'?) and re-run. Finder: Get-CimInstance Win32_Process -Filter `"Name='powershell.exe'`" | Where-Object { `$_.CommandLine -like '*secret_manager.ps1*proxy*start*' }"
 }
 
 # The SID allowed to use the admin pipe: the user running this installer.
@@ -300,6 +312,8 @@ if (-not $pipeUp) {
     fail "Admin pipe unreachable after 30s. service_config.json left in place for debugging."
 }
 Write-Host "Admin pipe is up." -ForegroundColor Green
+
+} # end setup (skipped in maintenance mode)
 
 # --- 5. vault migration ---------------------------------------------------
 if (-not $SkipMigration) {
