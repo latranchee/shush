@@ -50,6 +50,18 @@ Describe "parse_proxy_config" {
 
         (parse_proxy_config -Json '{"providers":{"p":{"secret":"s_key","auth":"bearer","base_url":"https://x.com","allow_methods":["TRACE"]}}}').success | Should -Be $false
     }
+
+    It "parses auth_passthrough_paths and rejects invalid regexes" {
+        $json = '{"providers":{"p":{"secret":"s_key","auth":"bearer","base_url":"https://x.com","auth_passthrough_paths":["^/v4/accounts/[0-9a-f]{32}/workers/assets/upload$"]}}}'
+        $result = parse_proxy_config -Json $json
+        $result.success | Should -Be $true
+        $result.data.p.auth_passthrough_paths | Should -Be @('^/v4/accounts/[0-9a-f]{32}/workers/assets/upload$')
+
+        $noField = parse_proxy_config -Json '{"providers":{"p":{"secret":"s_key","auth":"bearer","base_url":"https://x.com"}}}'
+        @($noField.data.p.auth_passthrough_paths).Count | Should -Be 0
+
+        (parse_proxy_config -Json '{"providers":{"p":{"secret":"s_key","auth":"bearer","base_url":"https://x.com","auth_passthrough_paths":["[unclosed"]}}}').error.code | Should -Be 'INVALID_CONFIG'
+    }
 }
 
 Describe "merge_provider_maps" {

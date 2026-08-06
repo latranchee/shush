@@ -161,12 +161,30 @@ function parse_proxy_config {
             }
         }
 
+        # Opt-in per-path regexes where the CLIENT's Authorization header is
+        # forwarded untouched and the vault credential is NOT sent. For flows
+        # where the provider mints its own short-lived token that the vault key
+        # cannot substitute for (e.g. Cloudflare Workers asset-upload JWTs).
+        $passthroughPaths = @()
+        if ($entry.PSObject.Properties.Match('auth_passthrough_paths').Count -gt 0 -and $entry.auth_passthrough_paths) {
+            $passthroughPaths = @($entry.auth_passthrough_paths | ForEach-Object { [string]$_ })
+            foreach ($p in $passthroughPaths) {
+                try { [void][regex]::new($p) } catch {
+                    return @{
+                        success = $false; data = $null
+                        error = @{ code = 'INVALID_CONFIG'; message = "Provider '$providerName' has invalid auth_passthrough_paths regex '$p'" }
+                    }
+                }
+            }
+        }
+
         $providers[$providerName] = @{
             secret = [string]$entry.secret
             auth = [string]$entry.auth
             base_url = $normalizedBaseUrl
             allow_methods = $allowMethods
             max_body_bytes = $maxBody
+            auth_passthrough_paths = $passthroughPaths
         }
     }
 
@@ -381,9 +399,25 @@ function handle_proxy_request {
             }
         }
 
-        # Inject the vault credential — the only auth that reaches the provider.
+        # Inject the vault credential — the only auth that reaches the
+        # provider, except on an opted-in auth_passthrough_path: there the
+        # client's own Authorization (a provider-minted short-lived token)
+        # goes through verbatim and the vault value stays home.
+        $passthroughAuth = $null
+        if (@($provider.auth_passthrough_paths).Count -gt 0) {
+            $clientAuth = $request.Headers['Authorization']
+            if ($clientAuth) {
+                foreach ($pattern in $provider.auth_passthrough_paths) {
+                    if ($route.data.upstream_path -match $pattern) { $passthroughAuth = $clientAuth; break }
+                }
+            }
+        }
         [void]$upstreamRequest.Headers.Remove($authPlan.data.header)
-        [void]$upstreamRequest.Headers.TryAddWithoutValidation($authPlan.data.header, $authPlan.data.prefix + $secretResult.data)
+        if ($passthroughAuth) {
+            [void]$upstreamRequest.Headers.TryAddWithoutValidation('Authorization', $passthroughAuth)
+        } else {
+            [void]$upstreamRequest.Headers.TryAddWithoutValidation($authPlan.data.header, $authPlan.data.prefix + $secretResult.data)
+        }
 
         $upstreamResponse = $HttpClient.SendAsync(
             $upstreamRequest,

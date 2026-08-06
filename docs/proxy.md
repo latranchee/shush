@@ -75,6 +75,13 @@ new names add:
   accepted only for `127.0.0.1` / `localhost` (test harnesses).
 - `allow_methods`: default `GET, POST`. Valid: GET, POST, PUT, PATCH, DELETE.
 - `max_body_bytes`: request-body cap, default 10MB. Exceeding it returns 413.
+- `auth_passthrough_paths`: optional array of regexes matched against the
+  upstream path. On a match, the client's own `Authorization` header is
+  forwarded verbatim and the vault key is not sent. For provider flows that
+  mint their own short-lived tokens the vault key cannot stand in for —
+  e.g. Cloudflare's Workers asset upload, where `wrangler` authenticates
+  chunk uploads with a per-session JWT returned by the (vault-authed)
+  session-start call. Scope patterns tightly: anchor both ends.
 
 ## Controls
 
