@@ -544,17 +544,12 @@ function start_proxy_listener {
             $handles.Add($httpAsync.AsyncWaitHandle)
             if ($adminEnabled) { $handles.Add($pipeAsync.AsyncWaitHandle) }
 
-            $signaled = [System.Threading.WaitHandle]::WaitAny($handles.ToArray())
+            [void][System.Threading.WaitHandle]::WaitAny($handles.ToArray())
 
-            if ($signaled -eq 0) {
-                $context = $listener.EndGetContext($httpAsync)
-                $httpAsync = $listener.BeginGetContext($null, $null)
-                try {
-                    handle_proxy_request -Context $context -Providers $Providers -ReadSecret $ReadSecret -HttpClient $client
-                } catch {
-                    try { write_proxy_error_response -Response $context.Response -StatusCode 500 -Code 'INTERNAL_ERROR' -Message 'Proxy internal error' } catch { }
-                }
-            } else {
+            # Service every signaled handle, pipe first: WaitAny reports only the
+            # lowest signaled index, so keying on its return value starves the
+            # pipe whenever HTTP traffic is continuous.
+            if ($adminEnabled -and $pipeAsync.IsCompleted) {
                 try {
                     $adminPipe.EndWaitForConnection($pipeAsync)
                     $summary = handle_admin_connection -Pipe $adminPipe
@@ -577,6 +572,15 @@ function start_proxy_listener {
                         $adminEnabled = $false
                         $pipeAsync = $null
                     }
+                }
+            }
+            if ($httpAsync.IsCompleted) {
+                $context = $listener.EndGetContext($httpAsync)
+                $httpAsync = $listener.BeginGetContext($null, $null)
+                try {
+                    handle_proxy_request -Context $context -Providers $Providers -ReadSecret $ReadSecret -HttpClient $client
+                } catch {
+                    try { write_proxy_error_response -Response $context.Response -StatusCode 500 -Code 'INTERNAL_ERROR' -Message 'Proxy internal error' } catch { }
                 }
             }
         }
