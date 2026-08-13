@@ -54,7 +54,8 @@ provider entry, pointing at the chosen secret:
 }
 ```
 
-- `auth`: `bearer` (Authorization: Bearer), `x-api-key`, or `x-goog-api-key`.
+- `auth`: `bearer` (Authorization: Bearer), `raw` (bare Authorization with no
+  scheme prefix — e.g. OpenPhone/Quo), `x-api-key`, or `x-goog-api-key`.
 - `base_url`: `https://host` only — no path, no trailing junk. Plain `http://`
   is accepted only for `127.0.0.1`/`localhost` (test harnesses).
 - Config entries merge over the built-ins (same name overrides).
