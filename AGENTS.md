@@ -90,7 +90,10 @@ Invoke-RestMethod http://127.0.0.1:8765/openai/v1/models
 ```
 
 Built-in providers: `openai`, `anthropic`, `gemini`. Custom providers go in
-`proxy.json` (gitignored). Reference: `docs/proxy.md`. For the full guided
+`proxy.json` (gitignored), which the running daemon hot-reloads within ~1s
+of a save — no restart needed to add or change a provider; invalid edits
+are rejected and logged while the previous config stays active.
+Reference: `docs/proxy.md`. For the full guided
 workflow (pick a vault secret, configure, start, verify) follow
 `.agents/skills/createProxy/SKILL.md`.
 

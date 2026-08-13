@@ -11,7 +11,7 @@ Set-StrictMode -Version Latest
 
 Import-Module (Join-Path $PSScriptRoot 'admin_pipe.psm1')
 
-$script:validAuthModes = @('bearer', 'x-api-key', 'x-goog-api-key')
+$script:validAuthModes = @('bearer', 'raw', 'x-api-key', 'x-goog-api-key')
 $script:defaultAllowMethods = @('GET', 'POST')
 $script:allMethods = @('GET', 'POST', 'PUT', 'PATCH', 'DELETE')
 $script:defaultMaxBodyBytes = 10MB
@@ -210,6 +210,41 @@ function merge_provider_maps {
     return $merged
 }
 
+# Change stamp for hot-reload comparisons; empty string when the file is
+# absent or unreadable.
+function get_proxy_config_stamp {
+    param([string]$Path)
+
+    try {
+        $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+        return "$($item.LastWriteTimeUtc.Ticks):$($item.Length)"
+    } catch {
+        return ''
+    }
+}
+
+# Reads the config file, validates it, and merges it onto the given defaults.
+function load_proxy_config_file {
+    param(
+        [string]$Path,
+        [hashtable]$Defaults = @{}
+    )
+
+    try {
+        $json = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
+    } catch {
+        return @{
+            success = $false; data = $null
+            error = @{ code = 'CONFIG_READ_FAILED'; message = "Cannot read proxy config '$Path': $($_.Exception.Message)" }
+        }
+    }
+
+    $parsed = parse_proxy_config -Json $json
+    if (-not $parsed.success) { return $parsed }
+
+    return @{ success = $true; data = (merge_provider_maps -Defaults $Defaults -Overrides $parsed.data); error = $null }
+}
+
 function resolve_proxy_route {
     param(
         [hashtable]$Providers,
@@ -267,6 +302,9 @@ function plan_auth_header {
 
     switch ($AuthMode) {
         'bearer' { return @{ success = $true; data = @{ header = 'Authorization'; prefix = 'Bearer ' }; error = $null } }
+        # 'raw' is for providers that expect the bare key in Authorization
+        # with no scheme prefix (e.g. OpenPhone/Quo).
+        'raw' { return @{ success = $true; data = @{ header = 'Authorization'; prefix = '' }; error = $null } }
         'x-api-key' { return @{ success = $true; data = @{ header = 'x-api-key'; prefix = '' }; error = $null } }
         'x-goog-api-key' { return @{ success = $true; data = @{ header = 'x-goog-api-key'; prefix = '' }; error = $null } }
         default {
@@ -288,6 +326,16 @@ function should_forward_header {
 }
 
 # --- side-effect layer below: HTTP listener + upstream forwarding ---
+
+# Request handling runs on worker runspaces, so Write-Host is not an option
+# (its output would be swallowed by the worker's pipeline instead of reaching
+# the daemon log). Console.Out is a synchronized writer shared process-wide,
+# so a single WriteLine from any thread lands intact on stdout.
+function write_proxy_log {
+    param([string]$Message)
+
+    try { [Console]::Out.WriteLine("$(Get-Date -Format 'HH:mm:ss') $Message") } catch { }
+}
 
 function write_proxy_error_response {
     param($Response, [int]$StatusCode, [string]$Code, [string]$Message)
@@ -332,51 +380,85 @@ function read_request_body_bytes {
     }
 }
 
-function handle_proxy_request {
+# Main-loop half of request handling: routing (pure) plus the vault read (a
+# local CredRead, microseconds). Everything here is non-blocking by design.
+# The blocking work - draining the client body, the upstream call, relaying
+# the response - lives in invoke_proxy_exchange and runs on a worker runspace,
+# so one slow provider cannot stall every other client.
+#
+# NOTE: query strings are never logged - some providers put keys there.
+function prepare_proxy_request {
     param(
-        $Context,
         [hashtable]$Providers,
-        [scriptblock]$ReadSecret,
-        $HttpClient
+        [string]$Method,
+        [string]$Path,
+        [string]$Query = '',
+        [scriptblock]$ReadSecret
     )
 
-    $request = $Context.Request
-    $response = $Context.Response
-    $method = $request.HttpMethod
-    # NOTE: query strings are never logged — some providers put keys there.
-    $logPath = $request.Url.AbsolutePath
-
-    $route = resolve_proxy_route -Providers $Providers -Method $method -Path $request.Url.AbsolutePath -Query $request.Url.Query
-    if (-not $route.success) {
-        Write-Host "$(Get-Date -Format 'HH:mm:ss') $($route.error.http_status) $method $logPath ($($route.error.code))"
-        write_proxy_error_response -Response $response -StatusCode $route.error.http_status -Code $route.error.code -Message $route.error.message
-        return
-    }
+    $route = resolve_proxy_route -Providers $Providers -Method $Method -Path $Path -Query $Query
+    if (-not $route.success) { return $route }
 
     $provider = $route.data.provider
     $secretResult = & $ReadSecret $provider.secret
     if (-not $secretResult.success) {
-        Write-Host "$(Get-Date -Format 'HH:mm:ss') 502 $method $logPath (SECRET_UNAVAILABLE: $($provider.secret))"
-        write_proxy_error_response -Response $response -StatusCode 502 -Code 'SECRET_UNAVAILABLE' -Message "Secret '$($provider.secret)' for provider '$($route.data.provider_name)' is not available in the vault"
-        return
+        return @{
+            success = $false; data = $null
+            error = @{
+                code = 'SECRET_UNAVAILABLE'; http_status = 502
+                message = "Secret '$($provider.secret)' for provider '$($route.data.provider_name)' is not available in the vault"
+                log_detail = "SECRET_UNAVAILABLE: $($provider.secret)"
+            }
+        }
     }
 
     $authPlan = plan_auth_header -AuthMode $provider.auth
     if (-not $authPlan.success) {
-        write_proxy_error_response -Response $response -StatusCode 500 -Code $authPlan.error.code -Message $authPlan.error.message
-        return
+        return @{
+            success = $false; data = $null
+            error = @{ code = $authPlan.error.code; http_status = 500; message = $authPlan.error.message }
+        }
     }
+
+    return @{
+        success = $true
+        data = @{
+            route = $route.data
+            auth = $authPlan.data
+            secret_value = $secretResult.data
+        }
+        error = $null
+    }
+}
+
+# Worker half: runs on a pooled runspace. Owns the response object from here
+# on and must always close it, or the client hangs until its own timeout.
+function invoke_proxy_exchange {
+    param(
+        $Context,
+        [hashtable]$Plan,
+        $HttpClient
+    )
+
+    $started = [System.Diagnostics.Stopwatch]::StartNew()
+    $request = $Context.Request
+    $response = $Context.Response
+    $route = $Plan.route
+    $provider = $route.provider
+    $authPlan = $Plan.auth
+    $method = $route.method
+    $logPath = $request.Url.AbsolutePath
 
     $bodyResult = read_request_body_bytes -Request $request -MaxBytes $provider.max_body_bytes
     if (-not $bodyResult.success) {
-        Write-Host "$(Get-Date -Format 'HH:mm:ss') 413 $method $logPath (BODY_TOO_LARGE)"
+        write_proxy_log "413 $method $logPath (BODY_TOO_LARGE) $($started.ElapsedMilliseconds)ms"
         write_proxy_error_response -Response $response -StatusCode 413 -Code $bodyResult.error.code -Message $bodyResult.error.message
         return
     }
 
     $upstreamRequest = [System.Net.Http.HttpRequestMessage]::new(
-        [System.Net.Http.HttpMethod]::new($route.data.method),
-        $route.data.upstream_url)
+        [System.Net.Http.HttpMethod]::new($route.method),
+        $route.upstream_url)
 
     try {
         if ($bodyResult.data.Length -gt 0) {
@@ -399,7 +481,7 @@ function handle_proxy_request {
             }
         }
 
-        # Inject the vault credential — the only auth that reaches the
+        # Inject the vault credential - the only auth that reaches the
         # provider, except on an opted-in auth_passthrough_path: there the
         # client's own Authorization (a provider-minted short-lived token)
         # goes through verbatim and the vault value stays home.
@@ -408,15 +490,15 @@ function handle_proxy_request {
             $clientAuth = $request.Headers['Authorization']
             if ($clientAuth) {
                 foreach ($pattern in $provider.auth_passthrough_paths) {
-                    if ($route.data.upstream_path -match $pattern) { $passthroughAuth = $clientAuth; break }
+                    if ($route.upstream_path -match $pattern) { $passthroughAuth = $clientAuth; break }
                 }
             }
         }
-        [void]$upstreamRequest.Headers.Remove($authPlan.data.header)
+        [void]$upstreamRequest.Headers.Remove($authPlan.header)
         if ($passthroughAuth) {
             [void]$upstreamRequest.Headers.TryAddWithoutValidation('Authorization', $passthroughAuth)
         } else {
-            [void]$upstreamRequest.Headers.TryAddWithoutValidation($authPlan.data.header, $authPlan.data.prefix + $secretResult.data)
+            [void]$upstreamRequest.Headers.TryAddWithoutValidation($authPlan.header, $authPlan.prefix + $Plan.secret_value)
         }
 
         $upstreamResponse = $HttpClient.SendAsync(
@@ -458,7 +540,7 @@ function handle_proxy_request {
                 $response.OutputStream.Flush()
             }
 
-            Write-Host "$(Get-Date -Format 'HH:mm:ss') $([int]$upstreamResponse.StatusCode) $method $($route.data.provider_name) $($route.data.upstream_path)"
+            write_proxy_log "$([int]$upstreamResponse.StatusCode) $method $($route.provider_name) $($route.upstream_path) $($started.ElapsedMilliseconds)ms"
         }
         finally {
             $upstreamResponse.Dispose()
@@ -466,7 +548,7 @@ function handle_proxy_request {
         try { $response.Close() } catch { }
     }
     catch {
-        Write-Host "$(Get-Date -Format 'HH:mm:ss') 502 $method $logPath (UPSTREAM_FAILED)"
+        write_proxy_log "502 $method $logPath (UPSTREAM_FAILED) $($started.ElapsedMilliseconds)ms"
         write_proxy_error_response -Response $response -StatusCode 502 -Code 'UPSTREAM_FAILED' -Message "Upstream request failed: $($_.Exception.Message)"
     }
     finally {
@@ -481,10 +563,22 @@ function start_proxy_listener {
         [scriptblock]$ReadSecret,
         [scriptblock]$CheckSecret = $null,
         [string]$AdminPipeName = '',
-        [string]$AdminAllowedSid = ''
+        [string]$AdminAllowedSid = '',
+        [int]$MaxConcurrency = 16,
+        [string]$ConfigPath = '',
+        [hashtable]$DefaultProviders = @{}
     )
 
     Add-Type -AssemblyName System.Net.Http
+
+    if ($MaxConcurrency -lt 1) { $MaxConcurrency = 1 }
+
+    # .NET Framework caps outbound connections per endpoint at 2 by default,
+    # which would re-serialize upstream calls no matter how many workers run.
+    $connectionLimit = $MaxConcurrency * 2
+    if ([System.Net.ServicePointManager]::DefaultConnectionLimit -lt $connectionLimit) {
+        [System.Net.ServicePointManager]::DefaultConnectionLimit = $connectionLimit
+    }
 
     $listener = [System.Net.HttpListener]::new()
     # Loopback only, by design. Never bind a routable interface.
@@ -519,7 +613,39 @@ function start_proxy_listener {
     $client = [System.Net.Http.HttpClient]::new()
     $client.Timeout = [TimeSpan]::FromSeconds(300)
 
-    Write-Host "shush proxy listening on http://127.0.0.1:$Port/"
+    # Worker pool. Requests are handled off the accept loop so a slow provider
+    # cannot block unrelated clients; the pool only needs this module, because
+    # the vault read already happened on the main loop and the resolved value
+    # is passed in as an argument.
+    # No PSHost is attached on purpose: workers log through write_proxy_log
+    # (Console.Out), so they never touch the console host from a background
+    # thread.
+    $initialState = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
+    $initialState.ImportPSModule(@((Join-Path $PSScriptRoot 'proxy_server.psm1')))
+    $pool = [runspacefactory]::CreateRunspacePool($initialState)
+    [void]$pool.SetMinRunspaces(1)
+    [void]$pool.SetMaxRunspaces($MaxConcurrency)
+    $pool.Open()
+
+    $worker = {
+        param($Context, $Plan, $HttpClient)
+        Add-Type -AssemblyName System.Net.Http
+        try {
+            invoke_proxy_exchange -Context $Context -Plan $Plan -HttpClient $HttpClient
+        } catch {
+            try {
+                write_proxy_error_response -Response $Context.Response -StatusCode 500 `
+                    -Code 'INTERNAL_ERROR' -Message 'Proxy internal error'
+            } catch { }
+        }
+    }
+
+    # Accepted but not yet finished. Bounded so a runaway client queues up
+    # memory instead of unbounded HttpListenerContexts.
+    $inflight = [System.Collections.Generic.List[object]]::new()
+    $maxQueued = $MaxConcurrency * 8
+
+    Write-Host "shush proxy listening on http://127.0.0.1:$Port/ (up to $MaxConcurrency concurrent requests)"
     Write-Host "Routes: http://127.0.0.1:$Port/<provider>/<upstream-path>"
     foreach ($providerName in (@($Providers.Keys) | Sort-Object)) {
         $provider = $Providers[$providerName]
@@ -533,6 +659,11 @@ function start_proxy_listener {
     if ($adminEnabled) {
         Write-Host "Admin pipe: \\.\pipe\$AdminPipeName (write-only; client SID $AdminAllowedSid)"
     }
+    $hotReload = -not [string]::IsNullOrEmpty($ConfigPath)
+    $configStamp = if ($hotReload) { get_proxy_config_stamp -Path $ConfigPath } else { '' }
+    if ($hotReload) {
+        Write-Host "Hot-reload: watching $ConfigPath (edits apply within ~1s; invalid edits are ignored)"
+    }
     Write-Host "Press Ctrl+C to stop."
 
     try {
@@ -544,7 +675,45 @@ function start_proxy_listener {
             $handles.Add($httpAsync.AsyncWaitHandle)
             if ($adminEnabled) { $handles.Add($pipeAsync.AsyncWaitHandle) }
 
-            [void][System.Threading.WaitHandle]::WaitAny($handles.ToArray())
+            # Bounded wait: workers finish on their own threads, so the loop
+            # needs a periodic tick to reap them even when no new traffic
+            # arrives. Their handles are deliberately not in the wait set -
+            # WaitAny tops out at 64 handles.
+            [void][System.Threading.WaitHandle]::WaitAny($handles.ToArray(), 1000)
+
+            # Config hot-reload: a cheap stamp check at most once per loop
+            # tick. A bad or half-written file never takes down the daemon -
+            # the previous provider set stays active and the rejection is
+            # logged; the editor's final save changes the stamp again and
+            # triggers a retry. Safe against workers: $Providers is only read
+            # on this thread (prepare_proxy_request), workers receive a
+            # resolved plan by value.
+            if ($hotReload) {
+                $stamp = get_proxy_config_stamp -Path $ConfigPath
+                if ($stamp -ne $configStamp) {
+                    $configStamp = $stamp
+                    if (-not $stamp) {
+                        write_proxy_log "config $ConfigPath removed; keeping current providers"
+                    } else {
+                        $reloaded = load_proxy_config_file -Path $ConfigPath -Defaults $DefaultProviders
+                        if ($reloaded.success) {
+                            $Providers = $reloaded.data
+                            write_proxy_log "config reloaded: $((@($Providers.Keys) | Sort-Object) -join ', ')"
+                        } else {
+                            write_proxy_log "config reload rejected (keeping current providers): $($reloaded.error.message)"
+                        }
+                    }
+                }
+            }
+
+            for ($i = $inflight.Count - 1; $i -ge 0; $i--) {
+                $job = $inflight[$i]
+                if ($job.handle.IsCompleted) {
+                    try { [void]$job.shell.EndInvoke($job.handle) } catch { }
+                    try { $job.shell.Dispose() } catch { }
+                    $inflight.RemoveAt($i)
+                }
+            }
 
             # Service every signaled handle, pipe first: WaitAny reports only the
             # lowest signaled index, so keying on its return value starves the
@@ -553,9 +722,9 @@ function start_proxy_listener {
                 try {
                     $adminPipe.EndWaitForConnection($pipeAsync)
                     $summary = handle_admin_connection -Pipe $adminPipe
-                    Write-Host "$(Get-Date -Format 'HH:mm:ss') admin $summary"
+                    write_proxy_log "admin $summary"
                 } catch {
-                    Write-Host "$(Get-Date -Format 'HH:mm:ss') admin connection error"
+                    write_proxy_log "admin connection error"
                 }
                 try { $adminPipe.Disconnect() } catch { }
                 try {
@@ -578,7 +747,36 @@ function start_proxy_listener {
                 $context = $listener.EndGetContext($httpAsync)
                 $httpAsync = $listener.BeginGetContext($null, $null)
                 try {
-                    handle_proxy_request -Context $context -Providers $Providers -ReadSecret $ReadSecret -HttpClient $client
+                    if ($inflight.Count -ge $maxQueued) {
+                        write_proxy_log "503 $($context.Request.HttpMethod) $($context.Request.Url.AbsolutePath) (OVERLOADED: $($inflight.Count) in flight)"
+                        write_proxy_error_response -Response $context.Response -StatusCode 503 `
+                            -Code 'OVERLOADED' -Message "Proxy has $($inflight.Count) requests in flight; retry shortly"
+                    } else {
+                        # Routing and the vault read stay on this thread (both
+                        # are microseconds); only the blocking exchange is
+                        # handed to a worker.
+                        $prepared = prepare_proxy_request -Providers $Providers `
+                            -Method $context.Request.HttpMethod `
+                            -Path $context.Request.Url.AbsolutePath `
+                            -Query $context.Request.Url.Query `
+                            -ReadSecret $ReadSecret
+
+                        if (-not $prepared.success) {
+                            # Strict mode turns a missing key into a throw, so
+                            # probe rather than dereference: routing errors
+                            # carry no log_detail.
+                            $detail = $prepared.error.code
+                            if ($prepared.error.ContainsKey('log_detail')) { $detail = $prepared.error.log_detail }
+                            write_proxy_log "$($prepared.error.http_status) $($context.Request.HttpMethod) $($context.Request.Url.AbsolutePath) ($detail)"
+                            write_proxy_error_response -Response $context.Response `
+                                -StatusCode $prepared.error.http_status -Code $prepared.error.code -Message $prepared.error.message
+                        } else {
+                            $shell = [powershell]::Create()
+                            $shell.RunspacePool = $pool
+                            [void]$shell.AddScript($worker).AddArgument($context).AddArgument($prepared.data).AddArgument($client)
+                            $inflight.Add(@{ shell = $shell; handle = $shell.BeginInvoke() })
+                        }
+                    }
                 } catch {
                     try { write_proxy_error_response -Response $context.Response -StatusCode 500 -Code 'INTERNAL_ERROR' -Message 'Proxy internal error' } catch { }
                 }
@@ -588,6 +786,11 @@ function start_proxy_listener {
     finally {
         try { $listener.Stop() } catch { }
         if ($null -ne $adminPipe) { try { $adminPipe.Dispose() } catch { } }
+        foreach ($job in $inflight) {
+            try { [void]$job.shell.EndInvoke($job.handle) } catch { }
+            try { $job.shell.Dispose() } catch { }
+        }
+        try { $pool.Close(); $pool.Dispose() } catch { }
         $client.Dispose()
     }
 
@@ -599,11 +802,15 @@ Export-ModuleMember -Function @(
     'test_provider_base_url',
     'parse_proxy_config',
     'merge_provider_maps',
+    'get_proxy_config_stamp',
+    'load_proxy_config_file',
     'resolve_proxy_route',
     'plan_auth_header',
     'should_forward_header',
     'read_request_body_bytes',
-    'handle_proxy_request',
+    'prepare_proxy_request',
+    'invoke_proxy_exchange',
     'start_proxy_listener',
-    'write_proxy_error_response'
+    'write_proxy_error_response',
+    'write_proxy_log'
 )

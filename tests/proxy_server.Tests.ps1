@@ -75,6 +75,51 @@ Describe "merge_provider_maps" {
     }
 }
 
+Describe "get_proxy_config_stamp" {
+    It "returns empty for a missing file" {
+        get_proxy_config_stamp -Path (Join-Path $TestDrive 'nope.json') | Should -Be ''
+    }
+
+    It "changes when the file content changes" {
+        $path = Join-Path $TestDrive 'stamp.json'
+        Set-Content $path 'first' -Encoding utf8
+        $first = get_proxy_config_stamp -Path $path
+        $first | Should -Not -Be ''
+
+        Start-Sleep -Milliseconds 50
+        Set-Content $path 'second version' -Encoding utf8
+        get_proxy_config_stamp -Path $path | Should -Not -Be $first
+    }
+}
+
+Describe "load_proxy_config_file" {
+    It "loads a valid config merged onto defaults" {
+        $path = Join-Path $TestDrive 'good.json'
+        Set-Content $path '{"providers":{"extra":{"secret":"extra_key","auth":"bearer","base_url":"https://extra.example.com"}}}' -Encoding utf8
+        $defaults = @{ base = @{ base_url = 'https://base.example.com' } }
+        $result = load_proxy_config_file -Path $path -Defaults $defaults
+        $result.success | Should -Be $true
+        $result.data.Keys.Count | Should -Be 2
+        $result.data.extra.secret | Should -Be 'extra_key'
+        $result.data.base.base_url | Should -Be 'https://base.example.com'
+    }
+
+    It "fails with CONFIG_READ_FAILED for a missing file" {
+        $result = load_proxy_config_file -Path (Join-Path $TestDrive 'absent.json') -Defaults @{}
+        $result.success | Should -Be $false
+        $result.error.code | Should -Be 'CONFIG_READ_FAILED'
+    }
+
+    It "fails with INVALID_CONFIG for a broken file and leaves no partial data" {
+        $path = Join-Path $TestDrive 'broken.json'
+        Set-Content $path '{"providers":{' -Encoding utf8
+        $result = load_proxy_config_file -Path $path -Defaults @{}
+        $result.success | Should -Be $false
+        $result.error.code | Should -Be 'INVALID_CONFIG'
+        $result.data | Should -Be $null
+    }
+}
+
 Describe "resolve_proxy_route" {
     BeforeAll {
         $script:providers = @{
@@ -131,6 +176,12 @@ Describe "plan_auth_header" {
 
         (plan_auth_header -AuthMode 'x-api-key').data.header | Should -Be 'x-api-key'
         (plan_auth_header -AuthMode 'x-goog-api-key').data.header | Should -Be 'x-goog-api-key'
+    }
+
+    It "plans raw Authorization injection with no scheme prefix" {
+        $raw = plan_auth_header -AuthMode 'raw'
+        $raw.data.header | Should -Be 'Authorization'
+        $raw.data.prefix | Should -Be ''
     }
 
     It "rejects unknown auth modes" {

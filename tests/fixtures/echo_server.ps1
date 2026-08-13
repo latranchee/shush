@@ -23,6 +23,13 @@ while ($listener.IsListening) {
         break
     }
 
+    # /__sleep/<ms> stalls this upstream, so the concurrency check can hold one
+    # provider busy and prove the proxy still serves everyone else. This server
+    # is deliberately serial - run a second instance for the fast provider.
+    if ($request.Url.AbsolutePath -match '^/__sleep/(\d+)$') {
+        Start-Sleep -Milliseconds ([int]$Matches[1])
+    }
+
     $headers = @{}
     foreach ($key in $request.Headers.AllKeys) {
         $headers[$key] = $request.Headers[$key]

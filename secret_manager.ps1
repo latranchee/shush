@@ -421,23 +421,22 @@ function invoke_proxy_command {
 
     $providers = get_default_providers
 
+    # An explicit --config must exist; the default proxy.json may be absent
+    # (the daemon still watches the path and hot-loads it if it appears).
     $configPath = $config
-    if (-not $configPath) {
-        $defaultConfig = Join-Path $scriptDir 'proxy.json'
-        if (Test-Path $defaultConfig) { $configPath = $defaultConfig }
+    if ($configPath -and -not (Test-Path $configPath)) {
+        Write-Host "ERROR: Proxy config not found: $configPath" -ForegroundColor Red
+        exit 1
     }
+    if (-not $configPath) { $configPath = Join-Path $scriptDir 'proxy.json' }
 
-    if ($configPath) {
-        if (-not (Test-Path $configPath)) {
-            Write-Host "ERROR: Proxy config not found: $configPath" -ForegroundColor Red
+    if (Test-Path $configPath) {
+        $loaded = load_proxy_config_file -Path $configPath -Defaults $providers
+        if (-not $loaded.success) {
+            Write-Host "ERROR: $($loaded.error.message)" -ForegroundColor Red
             exit 1
         }
-        $parsed = parse_proxy_config -Json (Get-Content $configPath -Raw)
-        if (-not $parsed.success) {
-            Write-Host "ERROR: $($parsed.error.message)" -ForegroundColor Red
-            exit 1
-        }
-        $providers = merge_provider_maps -Defaults $providers -Overrides $parsed.data
+        $providers = $loaded.data
         Write-Host "Loaded provider config: $configPath"
     }
 
@@ -452,6 +451,7 @@ function invoke_proxy_command {
     }
 
     $result = start_proxy_listener -Port $port -Providers $providers `
+        -ConfigPath $configPath -DefaultProviders (get_default_providers) `
         -AdminPipeName $pipeName -AdminAllowedSid $pipeSid `
         -ReadSecret {
             param($secretName)

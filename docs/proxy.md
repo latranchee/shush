@@ -31,6 +31,16 @@ If a `proxy.json` exists next to `secret_manager.ps1` it is loaded
 automatically. The startup banner lists every provider and whether its
 secret currently resolves (`[secret OK]` / `[secret MISSING]`).
 
+The config file is hot-reloaded: the daemon watches the config path
+(the `--config` path, or the default `proxy.json` location even if the
+file does not exist yet) and picks up edits within about a second - no
+restart needed to add or change a provider. An invalid or half-written
+file is rejected with a log line and the previous provider set stays
+active; the next successful save is picked up normally. Secret checks
+(`[secret OK]`) are printed at startup only; a reloaded provider whose
+secret is missing surfaces as `SECRET_UNAVAILABLE` (HTTP 502) at request
+time. A restart is still required for code changes or a port change.
+
 ## Routing
 
 `http://127.0.0.1:<port>/<provider>/<rest>` forwards to
@@ -69,8 +79,9 @@ new names add:
 }
 ```
 
-- `auth`: `bearer` → `Authorization: Bearer <key>`; `x-api-key` and
-  `x-goog-api-key` → the literal header.
+- `auth`: `bearer` → `Authorization: Bearer <key>`; `raw` →
+  `Authorization: <key>` with no scheme prefix (e.g. OpenPhone/Quo);
+  `x-api-key` and `x-goog-api-key` → the literal header.
 - `base_url`: `https://host[:port]` only, no path. Plain `http://` is
   accepted only for `127.0.0.1` / `localhost` (test harnesses).
 - `allow_methods`: default `GET, POST`. Valid: GET, POST, PUT, PATCH, DELETE.
@@ -96,10 +107,15 @@ new names add:
 - **Method allowlist** per provider (405 otherwise).
 - **Request size limit** per provider (413 otherwise).
 - **Redacted logging**: log lines contain time, status, method, provider,
-  and path — never query strings (some providers put keys there), header
-  values, bodies, or secrets.
+  path, and elapsed ms — never query strings (some providers put keys
+  there), header values, bodies, or secrets.
 - **Streaming**: responses are relayed in 8KB chunks with flushes, so SSE
   streams pass through as they arrive.
+- **Concurrency**: up to 16 requests are handled in parallel on a worker
+  pool. Routing and the vault read happen on the accept loop (both are
+  microseconds); the upstream call runs on a worker, so one slow provider
+  cannot stall other clients. Beyond 128 requests in flight the proxy sheds
+  load with 503 `OVERLOADED` rather than queueing without bound.
 
 ## Error responses
 
@@ -112,6 +128,7 @@ JSON body `{"error":{"code":..., "message":...}}` with:
 | 413 | `BODY_TOO_LARGE` | Request body over `max_body_bytes` |
 | 502 | `SECRET_UNAVAILABLE` | Provider's secret missing from the vault |
 | 502 | `UPSTREAM_FAILED` | Network/TLS failure reaching the provider |
+| 503 | `OVERLOADED` | Too many requests in flight; retry shortly |
 
 ## Client configuration
 

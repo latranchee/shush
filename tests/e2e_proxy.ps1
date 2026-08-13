@@ -32,6 +32,7 @@ $credentialModule = Join-Path $toolDir 'modules\credential_store.psm1'
 
 $echoPort = 18871
 $proxyPort = 18872
+$slowPort = 18873
 $secretName = "e2e_proxy_$([guid]::NewGuid().ToString('N').Substring(0, 16))"
 $sentinel = "proxy-e2e-key:$([guid]::NewGuid().ToString('N'))"
 
@@ -42,9 +43,12 @@ $proxyStdout = Join-Path $scratch 'proxy_out.log'
 $proxyStderr = Join-Path $scratch 'proxy_err.log'
 $echoStdout = Join-Path $scratch 'echo_out.log'
 $echoStderr = Join-Path $scratch 'echo_err.log'
+$slowStdout = Join-Path $scratch 'slow_out.log'
+$slowStderr = Join-Path $scratch 'slow_err.log'
 
 $echoProcess = $null
 $proxyProcess = $null
+$slowProcess = $null
 
 Write-Host "=== shush proxy E2E ===" -ForegroundColor Cyan
 Write-Host "  secret: $secretName  echo:$echoPort  proxy:$proxyPort"
@@ -86,6 +90,15 @@ try {
                 allow_methods = @('GET', 'POST')
                 max_body_bytes = 4096
             }
+            # Second upstream on its own process, used only by the concurrency
+            # check: stalling this one must not affect the 'echo' provider.
+            slow = @{
+                secret = $secretName
+                auth = 'bearer'
+                base_url = "http://127.0.0.1:$slowPort"
+                allow_methods = @('GET', 'POST')
+                max_body_bytes = 4096
+            }
         }
     } | ConvertTo-Json -Depth 5 | Set-Content $configPath -Encoding utf8
 
@@ -93,6 +106,11 @@ try {
         '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $echoFixture, '-Port', $echoPort
     ) -WindowStyle Hidden -PassThru -RedirectStandardOutput $echoStdout -RedirectStandardError $echoStderr
     _check "echo upstream responds" (wait_for_http -Url "http://127.0.0.1:$echoPort/ping" -Seconds $TimeoutSec) ''
+
+    $slowProcess = Start-Process powershell.exe -ArgumentList @(
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $echoFixture, '-Port', $slowPort
+    ) -WindowStyle Hidden -PassThru -RedirectStandardOutput $slowStdout -RedirectStandardError $slowStderr
+    _check "slow upstream responds" (wait_for_http -Url "http://127.0.0.1:$slowPort/ping" -Seconds $TimeoutSec) ''
 
     $proxyProcess = Start-Process powershell.exe -ArgumentList @(
         '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $entryScript,
@@ -134,13 +152,84 @@ try {
     catch { $status = [int]$_.Exception.Response.StatusCode }
     _check "oversized body returns 413" ($status -eq 413) "status=$status"
 
-    # 5. The secret value never appears in proxy output.
+    # 5. Concurrency: a slow provider must not stall unrelated clients.
+    # Regression guard for the serial accept loop, where every request was
+    # handled inline and one slow upstream blocked the whole proxy.
+    Add-Type -AssemblyName System.Net.Http
+    $concurrencyClient = [System.Net.Http.HttpClient]::new()
+    $concurrencyClient.Timeout = [TimeSpan]::FromSeconds(30)
+    try {
+        $slowTask = $concurrencyClient.GetAsync("http://127.0.0.1:$proxyPort/slow/__sleep/6000")
+        Start-Sleep -Milliseconds 750   # let the slow request occupy the proxy
+
+        $fastTimer = [System.Diagnostics.Stopwatch]::StartNew()
+        $fastResponse = Invoke-RestMethod -Uri "http://127.0.0.1:$proxyPort/echo/v1/models" -UseBasicParsing -TimeoutSec 20
+        $fastTimer.Stop()
+
+        _check "fast request not blocked by slow provider" `
+            (($fastTimer.ElapsedMilliseconds -lt 2000) -and ($fastResponse.path -eq '/v1/models')) `
+            "$($fastTimer.ElapsedMilliseconds)ms (serial proxy would exceed 5000ms)"
+
+        $slowResult = $slowTask.GetAwaiter().GetResult()
+        _check "slow request still completes correctly" ([int]$slowResult.StatusCode -eq 200) "status=$([int]$slowResult.StatusCode)"
+        $slowResult.Dispose()
+    }
+    finally {
+        $concurrencyClient.Dispose()
+    }
+
+    # 6. Config hot-reload. A broken edit is rejected (previous providers stay
+    # active), then a valid edit that adds a provider is served without any
+    # restart.
+    Set-Content $configPath 'this is not json' -Encoding utf8
+    Start-Sleep -Seconds 2
+    $afterBroken = Invoke-RestMethod -Uri "http://127.0.0.1:$proxyPort/echo/v1/still-up" -UseBasicParsing -TimeoutSec 10
+    _check "broken config edit keeps previous providers serving" ($afterBroken.path -eq '/v1/still-up') ''
+
+    @{
+        providers = @{
+            echo = @{
+                secret = $secretName
+                auth = 'bearer'
+                base_url = "http://127.0.0.1:$echoPort"
+                allow_methods = @('GET', 'POST')
+                max_body_bytes = 4096
+            }
+            slow = @{
+                secret = $secretName
+                auth = 'bearer'
+                base_url = "http://127.0.0.1:$slowPort"
+                allow_methods = @('GET', 'POST')
+                max_body_bytes = 4096
+            }
+            echo2 = @{
+                secret = $secretName
+                auth = 'bearer'
+                base_url = "http://127.0.0.1:$echoPort"
+                allow_methods = @('GET')
+            }
+        }
+    } | ConvertTo-Json -Depth 5 | Set-Content $configPath -Encoding utf8
+
+    $reloadDeadline = (Get-Date).AddSeconds(10)
+    $reloadOk = $false
+    while ((Get-Date) -lt $reloadDeadline) {
+        try {
+            $reloadResponse = Invoke-RestMethod -Uri "http://127.0.0.1:$proxyPort/echo2/v1/reloaded" -UseBasicParsing -TimeoutSec 5
+            if ($reloadResponse.path -eq '/v1/reloaded') { $reloadOk = $true; break }
+        } catch {
+            Start-Sleep -Milliseconds 300
+        }
+    }
+    _check "provider added by hot reload is served without restart" $reloadOk ''
+
+    # 7. The secret value never appears in proxy output.
     $proxyLogText = (Get-Content $proxyStdout -Raw -ErrorAction SilentlyContinue) + (Get-Content $proxyStderr -Raw -ErrorAction SilentlyContinue)
     _check "proxy output does not leak secret value" (-not ($proxyLogText -like "*$sentinel*")) ''
     _check "proxy output lists echo provider" ($proxyLogText -like "*echo*") ''
 }
 finally {
-    foreach ($proc in @($proxyProcess, $echoProcess)) {
+    foreach ($proc in @($proxyProcess, $echoProcess, $slowProcess)) {
         if ($proc -and -not $proc.HasExited) {
             try { Stop-Process -Id $proc.Id -Force -Confirm:$false } catch { }
         }
