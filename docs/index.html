@@ -263,6 +263,37 @@
     border-radius: 2px; padding: 3px 8px;
   }
 
+  /* ---------- comparison ---------- */
+  .cmp-wrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 3px; }
+  table.cmp { width: 100%; min-width: 660px; border-collapse: collapse; font-size: 12.5px; }
+  table.cmp th, table.cmp td { padding: 11px 14px; text-align: center; border-bottom: 1px solid var(--rule); }
+  table.cmp thead th {
+    font-weight: 500; font-size: 10px; letter-spacing: .16em; text-transform: uppercase;
+    color: var(--dim); border-bottom: 1px solid rgba(244,239,228,.22);
+  }
+  table.cmp tbody tr:last-child td { border-bottom: 0; }
+  table.cmp th.feat, table.cmp td.feat {
+    text-align: left; color: var(--paper-2); white-space: nowrap; font-weight: 400;
+  }
+  table.cmp td.feat b { color: var(--paper); font-weight: 500; }
+  /* The shush column: tinted end to end so the eye tracks it down the table. */
+  table.cmp .me { background: rgba(255,194,71,.07); color: var(--paper); }
+  table.cmp thead .me { color: var(--accent); font-weight: 600; }
+  table.cmp tbody tr:hover td { background: rgba(244,239,228,.03); }
+  table.cmp tbody tr:hover td.me { background: rgba(255,194,71,.11); }
+  /* Scoped to the table: a bare .p would collide with the accent-coloured
+     command prefix inside .code blocks. */
+  table.cmp .y { color: var(--ok); font-weight: 500; }
+  table.cmp .p { color: var(--dim); }
+  table.cmp .n { color: #46443f; }
+  .cmp-legend { font-size: 11px; color: var(--dim); margin-top: 12px; letter-spacing: .04em; }
+  .cmp-note { font-size: 11.5px; color: var(--dim); }
+
+  .elsewhere { margin-top: 34px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--rule); border: 1px solid var(--rule); }
+  .elsewhere > div { background: var(--ink); padding: 20px 20px 22px; }
+  .elsewhere h4 { margin: 0 0 8px; font-family: var(--mono); font-size: 12.5px; font-weight: 600; color: var(--paper); letter-spacing: -.01em; }
+  .elsewhere p { margin: 0; font-size: 12.5px; color: var(--paper-2); line-height: 1.65; }
+
   /* ---------- candour block ---------- */
   .candour { border: 1px solid var(--accent-dim); border-radius: 3px; padding: 30px 28px; background: linear-gradient(180deg, rgba(255,194,71,.05), transparent); }
   .candour h3 { font-family: var(--mono); font-size: 14px; font-weight: 600; letter-spacing: .04em; color: var(--accent); margin-bottom: 16px; }
@@ -307,6 +338,7 @@
       <nav class="top-links">
         <a href="#layers">Layers</a>
         <a href="#unlock">Unlock</a>
+        <a href="#compare">Compare</a>
         <a href="#limits">Limits</a>
         <a href="#start">Install</a>
         <a href="https://github.com/latranchee/shush">GitHub ↗</a>
@@ -415,9 +447,96 @@
     </div>
   </section>
 
-  <section id="start">
+  <section id="compare">
     <div class="sec-head rise">
       <span class="num">03</span>
+      <h2>How it stacks up</h2>
+    </div>
+    <p class="lede rise" style="max-width:60ch; margin-top:-22px; margin-bottom:34px;">
+      This isn't trying to be Doppler. It occupies a narrow niche: a solo developer
+      on Windows who wants tools and AI agents to use API keys without ever holding
+      them — offline, no account, nothing installed.
+    </p>
+
+    <div class="cmp-wrap rise">
+      <table class="cmp">
+        <thead>
+          <tr>
+            <th class="feat">&nbsp;</th>
+            <th class="me">shush</th>
+            <th>1Password</th>
+            <th>Doppler</th>
+            <th>Infisical</th>
+            <th>dotenvx</th>
+            <th>gopass</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="feat">Offline, no account</td>
+            <td class="me y">✓</td><td class="p">~</td><td class="n">·</td><td class="p">~</td><td class="y">✓</td><td class="y">✓</td>
+          </tr>
+          <tr>
+            <td class="feat">Free</td>
+            <td class="me y">✓</td><td class="n">·</td><td class="p">≤3</td><td class="p">≤5</td><td class="y">✓</td><td class="y">✓</td>
+          </tr>
+          <tr>
+            <td class="feat">Cross-platform</td>
+            <td class="me n">Windows</td><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td>
+          </tr>
+          <tr>
+            <td class="feat">Injects into a child process</td>
+            <td class="me y">✓</td><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td>
+          </tr>
+          <tr>
+            <td class="feat"><b>Key never reaches the tool</b></td>
+            <td class="me y">✓</td><td class="n">·</td><td class="n">·</td><td class="n">·</td><td class="n">·</td><td class="n">·</td>
+          </tr>
+          <tr>
+            <td class="feat"><b>Hardware unlock</b></td>
+            <td class="me y">FIDO2 + Hello</td><td class="p">biometric</td><td class="n">·</td><td class="n">·</td><td class="n">·</td><td class="p">smartcard</td>
+          </tr>
+          <tr>
+            <td class="feat">Sharing, audit, rotation</td>
+            <td class="me n">·</td><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td><td class="p">~</td><td class="p">~</td>
+          </tr>
+          <tr>
+            <td class="feat">Audited cryptography</td>
+            <td class="me n">·</td><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td><td class="p">~</td><td class="y">✓</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="cmp-legend">✓ yes &nbsp;·&nbsp; ~ partial &nbsp;·&nbsp; · no</div>
+
+    <p class="lede rise" style="max-width:62ch; margin-top:30px;">
+      Three rows here are genuinely uncommon. <b>The proxy</b> — nothing else on this
+      list keeps the key out of the client's hands. <b>Hardware-unlocked local
+      storage</b> — 1Password offers Windows Hello, but as biometric unlock of a
+      cloud account; a YubiKey touch decrypting a purely local vault with no account
+      behind it is close to unique. And <b>service mode</b>, which has no equivalent
+      at all.
+    </p>
+
+    <div class="elsewhere rise">
+      <div>
+        <h4>Use 1Password or Doppler if…</h4>
+        <p>More than one person needs the key. The moment sharing, rotation, or an audit trail matters, every cloud option beats this one.</p>
+      </div>
+      <div>
+        <h4>Use gopass or envy if…</h4>
+        <p>You're not on Windows. shush is Windows-only by design and will stay that way.</p>
+      </div>
+      <div>
+        <h4>Use anything older if…</h4>
+        <p>You need audited cryptography. This implements AES-CBC+HMAC, PBKDF2 and a hand-written CTAP2 stack — careful and test-covered, but new and unaudited.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="start">
+    <div class="sec-head rise">
+      <span class="num">04</span>
       <h2>Sixty seconds</h2>
     </div>
 
@@ -448,7 +567,7 @@
 
   <section id="limits">
     <div class="sec-head rise">
-      <span class="num">04</span>
+      <span class="num">05</span>
       <h2>What it doesn't do</h2>
     </div>
 

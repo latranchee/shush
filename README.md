@@ -95,6 +95,47 @@ a warning on stderr. See `docs/commands.md` for full details.
 for scripts, but the value lands in your shell history; use `set` when that
 matters.
 
+## How it compares
+
+shush is not trying to be Doppler. It occupies a narrow niche: **a solo
+developer on Windows who wants tools and AI agents to use API keys without
+ever holding them — offline, no account, nothing installed.**
+
+| | shush | 1Password CLI | Doppler | Infisical | dotenvx | gopass |
+|---|:--:|:--:|:--:|:--:|:--:|:--:|
+| Offline, no account | ✅ | ➖ | ❌ | ➖ | ✅ | ✅ |
+| Cost | free | ~$3/mo+ | free ≤3 users | free ≤5 / self-host | free | free |
+| Cross-platform | ❌ Windows | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Env injection (`run`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Key never reaches the tool** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Hardware unlock | ✅ FIDO2 + Hello | ➖ biometric | ❌ | ❌ | ❌ | ➖ smartcard |
+| Team sharing, audit, rotation | ❌ | ✅ | ✅ | ✅ | ➖ | ➖ |
+| Audited crypto | ❌ | ✅ | ✅ | ✅ | ➖ | ✅ |
+
+Three things here are genuinely uncommon. The **proxy** — nothing else in this
+list keeps the key out of the client's hands; the nearest equivalent is
+[LiteLLM's virtual keys](https://docs.litellm.ai/docs/proxy/virtual_keys), a
+Python/Docker server for teams and LLM traffic only. **Hardware-unlocked local
+storage** — 1Password offers Windows Hello, but as biometric unlock of a cloud
+account; a YubiKey touch decrypting a purely local vault with no account behind
+it is close to unique. And **service mode**, which has no equivalent at all:
+secrets held by a Windows account you cannot read from your own session.
+
+For context on the niche: [envchain](https://github.com/sorah/envchain), the
+tool this category descends from, doesn't run on Windows, and gopass's exec
+mode is [degraded there](https://github.com/gopasspw/gopass/blob/master/docs/commands/env.md).
+[envy](https://github.com/shoenig/envy) is the closest cross-platform sibling.
+
+### Use something else if
+
+- **More than one person needs the key.** Every cloud option beats this one the
+  moment sharing, rotation, or an audit trail matters.
+- **You are not on Windows.** Try 1Password CLI, gopass, or envy.
+- **You need audited cryptography.** shush implements AES-CBC+HMAC, PBKDF2, and
+  a hand-written CTAP2/HID stack. It is carefully written and test-covered, but
+  it is new, unaudited, and maintained by one person. 1Password, Vault, and
+  GPG-backed gopass have years of scrutiny behind them.
+
 ## Protected secrets: shared and public computers
 
 Credential Manager scopes secrets to your Windows user, so on a shared machine
