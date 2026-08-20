@@ -91,7 +91,7 @@
   h1.display { font-size: clamp(42px, 6.6vw, 80px); line-height: .98; letter-spacing: -.03em; margin: 20px 0 0; }
   h1.display em { font-style: italic; color: var(--accent); }
 
-  .lede { color: var(--paper-2); max-width: 48ch; margin: 26px 0 0; font-size: 15.5px; }
+  .lede { color: var(--paper-2); max-width: min(48ch, 100%); margin: 26px 0 0; font-size: 15.5px; }
   .lede b { font-weight: 500; color: var(--paper); }
   .lede code { color: var(--accent); font-size: 14px; }
 
@@ -193,7 +193,8 @@
   .sec-head { display: flex; align-items: baseline; gap: 16px; margin-bottom: 38px; flex-wrap: wrap; }
   .sec-head h2 { font-size: clamp(27px, 3.9vw, 41px); line-height: 1.06; }
   .sec-head .num { font-size: 11px; letter-spacing: .26em; color: var(--accent-dim); font-weight: 600; }
-  .sec-intro { max-width: 60ch; margin: -22px 0 34px; color: var(--paper-2); font-size: 15px; }
+  /* min() so a ch-based measure can never exceed a narrow container. */
+  .sec-intro { max-width: min(60ch, 100%); margin: -22px 0 34px; color: var(--paper-2); font-size: 15px; }
   .sec-intro b { color: var(--paper); font-weight: 500; }
   .sec-intro code { color: var(--accent); font-size: 13.5px; }
 
@@ -254,6 +255,23 @@
   table.cmp .p { color: var(--dim); }
   table.cmp .n { color: #46443f; }
   .cmp-legend { font-size: 11px; color: var(--dim); margin-top: 12px; letter-spacing: .04em; }
+
+  /* An editorial aside, not body copy. Framing it stops it reading as a stray
+     paragraph between the table and the cards - at narrow widths a bare 60ch
+     block floats there with a ragged edge against two full-width neighbours. */
+  .note {
+    margin-top: 30px; padding: 20px 22px;
+    border-left: 2px solid var(--accent-dim);
+    background: linear-gradient(90deg, rgba(255,194,71,.055), transparent 72%);
+  }
+  .note-label {
+    display: block; margin-bottom: 10px;
+    font-size: 10px; letter-spacing: .2em; text-transform: uppercase;
+    color: var(--accent); font-weight: 600;
+  }
+  .note p { margin: 0; max-width: min(68ch, 100%); color: var(--paper-2); font-size: 14px; line-height: 1.7; }
+  .note p + p { margin-top: 12px; }
+  .note code { color: var(--accent); font-size: 13px; }
 
   .elsewhere { margin-top: 34px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--rule); border: 1px solid var(--rule); }
   .elsewhere > div { background: var(--ink); padding: 20px 20px 22px; }
@@ -524,13 +542,18 @@
     </div>
     <div class="cmp-legend">✓ yes &nbsp;·&nbsp; ~ partial &nbsp;·&nbsp; · no</div>
 
-    <p class="sec-intro rise" style="margin-top: 30px;">
-      gopass is the closest sibling in spirit — local, offline, free, no account, and
-      with far better-scrutinised cryptography than this project has. But its model is
-      decrypt-and-print, and once <code>gpg-agent</code> has cached your passphrase it
-      stops prompting. An agent doesn't need to defeat anything; it just runs the
-      command. That gap is structural, not a bug.
-    </p>
+    <div class="note rise">
+      <span class="note-label">On gopass — the closest sibling</span>
+      <p>
+        Local, offline, free, no account, and with far better-scrutinised
+        cryptography than this project has.
+      </p>
+      <p>
+        But its model is decrypt-and-print, and once <code>gpg-agent</code> has cached
+        your passphrase it stops prompting. An agent doesn't need to defeat anything —
+        it just runs the command. That gap is structural, not a bug.
+      </p>
+    </div>
 
     <div class="elsewhere rise">
       <div>
