@@ -170,17 +170,95 @@ Invoke-RestMethod http://127.0.0.1:8765/openai/v1/models   # no key on the clien
 
 Secret names are lowercase snake_case: `openai_api_key`, `github_token`.
 
-## Typical AI-agent usage
+## Using shush with AI agents
+
+Agents are the awkward case: they run as you, they read files, and they
+sometimes print their own environment. Pick a level by how much you trust the
+agent — and note that the last two mean the agent *cannot* leak the key,
+rather than promising it won't.
+
+### 1. Inject the key into the agent (works with anything)
 
 ```powershell
-.\secret_manager.ps1 set anthropic_api_key
-.\secret_manager.ps1 run claude --env ANTHROPIC_API_KEY=anthropic_api_key
+shush set anthropic_api_key
+shush run claude --env ANTHROPIC_API_KEY=anthropic_api_key
 
-.\secret_manager.ps1 set openai_api_key
-.\secret_manager.ps1 run codex --env OPENAI_API_KEY=openai_api_key
+shush run codex --env OPENAI_API_KEY=openai_api_key
+shush run python .\script.py --env GEMINI_API_KEY=gemini_api_key
 
-.\secret_manager.ps1 run python .\script.py --env GEMINI_API_KEY=gemini_api_key
+# several at once, plus one that may legitimately be absent
+shush run node .\app.js `
+  --env OPENAI_API_KEY=openai_api_key `
+  --env GITHUB_TOKEN=github_token `
+  --env-optional SENTRY_DSN=sentry_dsn
 ```
+
+The key exists only in that child process, never in a file. But the agent
+*does* hold it — anything it runs or logs can expose it.
+
+Gotcha: `run` scrubs the child environment down to an OS-essential whitelist
+plus your declared mappings. If your agent needs some other inherited variable,
+declare it or launch the tool directly — it will not be inherited silently.
+
+### 2. Proxy: the agent never receives the key
+
+Point the agent's base URL at the local proxy and give it a placeholder key.
+The proxy injects the real credential upstream and strips whatever the client
+sent.
+
+```powershell
+shush proxy start                          # 127.0.0.1:8765, Ctrl+C to stop
+```
+
+```powershell
+# in the shell that launches the agent
+$env:ANTHROPIC_BASE_URL = 'http://127.0.0.1:8765/anthropic'
+$env:ANTHROPIC_API_KEY  = 'proxied'        # placeholder; the proxy discards it
+claude
+
+$env:OPENAI_BASE_URL = 'http://127.0.0.1:8765/openai/v1'
+$env:OPENAI_API_KEY  = 'proxied'
+codex
+```
+
+Note the shapes differ: OpenAI's route includes `/v1`, Anthropic's does not,
+because each SDK appends its own path. Built-in providers are `openai`,
+`anthropic`, and `gemini`; add your own in `proxy.json`. Guided setup lives in
+`.agents/skills/createProxy/SKILL.md` — point your agent at it and it will
+configure this for you.
+
+### 3. Encrypt the key at rest as well (shared or public machine)
+
+Levels 1 and 2 both assume the Windows account is yours. If it isn't, protect
+the secret and unlock the proxy once per session:
+
+```powershell
+shush enroll --keyfile                     # or --passphrase, --hello, --yubikey
+shush protect anthropic_api_key
+shush proxy start                          # unlocks once, holds it for the session
+```
+
+The agent then works all session with no further prompts, and the key is
+ciphertext in the vault whenever the proxy is not running.
+
+### 4. If the agent itself is the threat: service mode
+
+Service mode moves the vault to an account you cannot read from your own
+session, so no agent running as you can retrieve a value — with or without an
+unlock factor:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install_proxy_service.ps1   # elevated, once
+```
+
+`shush create/list/delete` keep working through a write-only pipe; reading is
+simply not implemented. Agents call providers through the proxy instead.
+
+### For agents working *on* this repo
+
+`AGENTS.md` is the instruction file for Claude Code, Codex, Gemini CLI, and
+friends: setup, conventions, the hard rules about never printing a secret, and
+what to do when a secret is protected or service-mode-only.
 
 ## Security model (short version)
 
