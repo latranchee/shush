@@ -12,11 +12,31 @@ in `.env` files, project folders, or shell history.
 .\secret_manager.ps1 run codex --env OPENAI_API_KEY=openai_api_key   # key injected only into that process
 ```
 
+From there it layers on: encrypt a key at rest so a shared machine can't give
+it up, route calls through a proxy so the tool never holds the key at all, or
+move the whole vault to an account you yourself can't read.
+
+## How protected do you want to be?
+
+Each layer is independent and opt-in. Start at the top; add what you need.
+
+| Layer | Turn it on with | Stops |
+|-------|-----------------|-------|
+| **Vault** | `set` + `run` | Keys in `.env` files, repos, screenshots, shell history |
+| **Protected secrets** | `enroll` + `protect` | Someone else on a shared or public machine reading your vault |
+| **Proxy mode** | `proxy start` | The tool or AI agent ever holding the key |
+| **Service mode** | `install_proxy_service.ps1` | Anything running as *you* reading a value back |
+
+Nothing here defends a session that is already unlocked, or a machine whose
+administrator is hostile. `docs/security_model.md` is specific about the edges.
+
 ## Requirements
 
 - Windows 10/11
 - Windows PowerShell 5.1 (built-in) or PowerShell 7+
 - No external dependencies — pure PowerShell + Win32 credential APIs
+- Optional, only for the matching unlock factor: a TPM with Windows Hello
+  enrolled, or a FIDO2 security key
 - Optional: [Pester 5.7.1](https://pester.dev) to run the unit tests
 
 ## Install
@@ -116,11 +136,13 @@ encrypts, and verifying needs the seed stored on the same machine as the keys.
 
 ## Service mode: protect secrets from your own tools
 
-Everything above still leaves one gap: any process running as *you* (an AI
-agent, a stray npm script) can read your vault, because Windows scopes
-Credential Manager per user. Service mode closes it — secrets move to a
-dedicated hidden service account, the proxy daemon runs as that account,
-and your CLI keeps working unchanged through a **write-only** named pipe:
+Protected secrets close the shared-machine gap, but only while the vault is
+locked — once you unlock to use a key, any process running as *you* (an AI
+agent, a stray npm script) can read it, because Windows scopes Credential
+Manager per user. Unprotected secrets are readable by those processes all the
+time. Service mode closes both cases without an unlock step: secrets move to a
+dedicated hidden service account, the proxy daemon runs as that account, and
+your CLI keeps working unchanged through a **write-only** named pipe:
 `shush create/list/delete` still work; nothing can read a value back.
 
 ```powershell
@@ -171,8 +193,13 @@ Secret names are lowercase snake_case: `openai_api_key`, `github_token`.
 - `run` scrubs the inherited environment down to an OS-essential whitelist
   plus your declared mappings, so stray `$env:*_API_KEY` values don't leak
   into children that didn't ask for them.
-- This protects against accidental exposure and casual browsing — **not**
-  against a local administrator or malware running as the same user.
+- A **protected** secret is stored encrypted (AES-256-CBC + HMAC-SHA256,
+  encrypt-then-MAC) under a master key that only an enrolled unlock factor
+  recovers, so the stored blob is useless to anyone who reads the vault.
+- On its own, the vault protects against accidental exposure and casual
+  browsing — **not** against a local administrator or malware running as the
+  same user. `protect` raises that bar at rest; service mode raises it while
+  running. Neither helps once a value is unlocked and in a process.
 
 Full write-up: `docs/security_model.md`.
 
@@ -194,10 +221,24 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\e2e_proxy.ps1
 
 # Admin-pipe end-to-end (service-mode plumbing, simulated same-user)
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\e2e_admin_pipe.ps1
+
+# Protected secrets end-to-end (throwaway secret + throwaway key slots)
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\e2e_protected_secrets.ps1
+
+# Unlock hardware — INTERACTIVE: asks for a Hello gesture and key touches.
+# Skips rather than fails when the hardware is absent.
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\e2e_hardware_factors.ps1
 ```
 
-The e2e test stores, lists, overwrites, injects, and deletes a uniquely named
-throwaway secret; it cleans up after itself and never touches your real keys.
+The e2e tests store, list, overwrite, inject, protect, and delete uniquely
+named throwaway secrets; they clean up after themselves and never touch your
+real keys.
+
+Status: the vault, protected secrets, the passphrase factor, and the keyfile
+factor are covered by automated tests on both PowerShell hosts. The Windows
+Hello and FIDO2 factors are **not yet verified against real hardware** — run
+`e2e_hardware_factors.ps1` on a machine with a TPM or a security key before
+relying on either as your only unlock factor.
 
 ## Docs
 
@@ -205,6 +246,7 @@ throwaway secret; it cleans up after itself and never touches your real keys.
 - `docs/architecture.md` — storage / runner / CLI layers
 - `docs/commands.md` — full command reference
 - `docs/security_model.md` — what this does and does not protect against
+- `docs/protected_secrets.md` — encryption at rest and the four unlock factors
 - `docs/proxy.md` — proxy mode: routing, config, controls
 - `docs/service_mode.md` — service mode: the same-user protection boundary
 - `AGENTS.md` — setup and conventions for AI coding agents
