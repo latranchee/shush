@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>shush — API keys that stay quiet</title>
+<meta name="description" content="Local Windows API-key manager for developer tools, AI agents, and scripts. Keys live in Windows Credential Manager, encrypted at rest, unlocked by passphrase, Windows Hello, a YubiKey, or a thumbdrive.">
+<meta property="og:title" content="shush — API keys that stay quiet">
+<meta property="og:description" content="Windows secrets manager. Plaintext keys never touch a file, a repo, or your shell history.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🤫</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Mono:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink:        #09090b;
+    --ink-2:      #101013;
+    --ink-3:      #17171c;
+    --paper:      #f4efe4;
+    --paper-2:    #e2dccd;
+    --dim:        #8a867d;
+    --rule:       rgba(244, 239, 228, .13);
+    --accent:     #ffc247;
+    --accent-dim: #7a5d1d;
+    --stamp:      #e0524f;
+    --ok:         #8fbf6b;
+    --bar:        #0b0b0d;
+    --mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+    --serif: "Instrument Serif", "Iowan Old Style", Georgia, serif;
+  }
+
+  * { box-sizing: border-box; }
+
+  html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+
+  body {
+    margin: 0;
+    background: var(--ink);
+    color: var(--paper);
+    font-family: var(--mono);
+    font-weight: 300;
+    font-size: 15px;
+    line-height: 1.72;
+    letter-spacing: -.01em;
+    overflow-x: hidden;
+  }
+
+  /* Film grain. Sits above the background, below everything readable. */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: -50%;
+    z-index: 0;
+    pointer-events: none;
+    opacity: .22;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)' opacity='.5'/%3E%3C/svg%3E");
+  }
+
+  /* Faint dossier grid. */
+  body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    background-image:
+      linear-gradient(var(--rule) 1px, transparent 1px),
+      linear-gradient(90deg, var(--rule) 1px, transparent 1px);
+    background-size: 96px 96px;
+    opacity: .35;
+    mask-image: radial-gradient(ellipse 90% 60% at 50% 0%, #000 30%, transparent 78%);
+  }
+
+  .wrap { position: relative; z-index: 1; max-width: 1040px; margin: 0 auto; padding: 0 28px; }
+
+  a { color: inherit; }
+
+  ::selection { background: var(--accent); color: var(--ink); }
+
+  /* ---------- type ---------- */
+  h1, h2, h3 { font-family: var(--serif); font-weight: 400; letter-spacing: -.015em; margin: 0; }
+
+  .eyebrow {
+    font-size: 11px;
+    letter-spacing: .28em;
+    text-transform: uppercase;
+    color: var(--dim);
+    font-weight: 500;
+  }
+
+  /* ---------- header ---------- */
+  header { padding: 34px 0 0; }
+
+  .bar-top {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 20px; flex-wrap: wrap;
+    border-bottom: 1px solid var(--rule); padding-bottom: 14px;
+  }
+
+  .brand { font-family: var(--mono); font-weight: 600; font-size: 15px; letter-spacing: -.02em; }
+  .brand .sh { color: var(--accent); }
+
+  .top-links { display: flex; gap: 22px; font-size: 12.5px; letter-spacing: .04em; }
+  .top-links a { color: var(--dim); text-decoration: none; transition: color .18s; }
+  .top-links a:hover, .top-links a:focus-visible { color: var(--paper); }
+
+  /* ---------- hero ---------- */
+  .hero { padding: 82px 0 64px; display: grid; grid-template-columns: 1.05fr .95fr; gap: 58px; align-items: start; }
+
+  h1.display {
+    font-size: clamp(46px, 7.2vw, 88px);
+    line-height: .96;
+    letter-spacing: -.03em;
+    margin: 20px 0 0;
+  }
+  h1.display em { font-style: italic; color: var(--accent); }
+
+  .lede { color: var(--paper-2); max-width: 46ch; margin: 26px 0 0; font-size: 15.5px; }
+  .lede b { font-weight: 500; color: var(--paper); }
+
+  .cta-row { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 34px; }
+
+  .btn {
+    font-family: var(--mono); font-size: 13px; font-weight: 500; letter-spacing: .02em;
+    padding: 11px 18px; border-radius: 2px; text-decoration: none;
+    border: 1px solid var(--paper); background: var(--paper); color: var(--ink);
+    transition: transform .16s ease, background .16s, color .16s;
+  }
+  .btn:hover { transform: translateY(-2px); }
+  .btn.ghost { background: transparent; color: var(--paper); border-color: rgba(244,239,228,.3); }
+  .btn.ghost:hover { border-color: var(--paper); }
+
+  /* ---------- the dossier ---------- */
+  .sheet {
+    background: var(--paper);
+    color: var(--ink);
+    border-radius: 2px;
+    padding: 22px 22px 26px;
+    box-shadow: 0 34px 70px -28px rgba(0,0,0,.9), 0 2px 0 rgba(255,255,255,.05);
+    transform: rotate(-.5deg);
+    position: relative;
+  }
+  .sheet::after {
+    content: "";
+    position: absolute; inset: 0; pointer-events: none; border-radius: 2px;
+    background: linear-gradient(112deg, rgba(255,255,255,.5), transparent 42%);
+    mix-blend-mode: overlay;
+  }
+
+  .sheet-head {
+    display: flex; justify-content: space-between; align-items: baseline;
+    border-bottom: 1.5px solid rgba(9,9,11,.24); padding-bottom: 9px; margin-bottom: 16px;
+    font-size: 10.5px; letter-spacing: .2em; text-transform: uppercase; color: #55524b;
+  }
+
+  .row { display: flex; justify-content: space-between; gap: 14px; align-items: center; padding: 8px 0; font-size: 13px; }
+  .row + .row { border-top: 1px dashed rgba(9,9,11,.16); }
+  .row .k { color: #3a382f; font-weight: 500; }
+
+  /* Redaction bar: the whole point. */
+  .redact {
+    position: relative;
+    display: inline-block;
+    color: transparent;
+    background: var(--bar);
+    border-radius: 1px;
+    padding: 1px 7px;
+    overflow: hidden;
+    cursor: not-allowed;
+    user-select: none;
+  }
+  .redact::before {
+    content: "";
+    position: absolute; inset: 0;
+    background: var(--bar);
+    transform-origin: left center;
+    transform: scaleX(0);
+    animation: sweep .5s cubic-bezier(.7,0,.2,1) forwards;
+  }
+  .redact.d1::before { animation-delay: .55s; }
+  .redact.d2::before { animation-delay: .72s; }
+  .redact.d3::before { animation-delay: .89s; }
+  .redact.d4::before { animation-delay: 1.06s; }
+  @keyframes sweep { to { transform: scaleX(1); } }
+
+  /* Before the sweep lands, the "key" is briefly visible. */
+  .redact { background: transparent; color: #6d6a60; transition: color .01s .3s; }
+  .redact.done { color: transparent; }
+
+  .redact:hover::after {
+    content: "🤫";
+    position: absolute; inset: 0;
+    display: grid; place-items: center;
+    font-size: 11px;
+  }
+
+  .stamp {
+    position: absolute; right: 16px; bottom: -14px;
+    font-family: var(--mono); font-weight: 600; font-size: 10.5px; letter-spacing: .22em;
+    color: var(--stamp); border: 2px solid var(--stamp); border-radius: 3px;
+    padding: 5px 10px; transform: rotate(-7deg);
+    background: rgba(244,239,228,.9);
+    opacity: 0; animation: stampIn .34s cubic-bezier(.2,1.5,.4,1) 1.35s forwards;
+  }
+  @keyframes stampIn { from { opacity: 0; transform: rotate(-7deg) scale(1.7); } to { opacity: 1; transform: rotate(-7deg) scale(1); } }
+
+  /* ---------- code ---------- */
+  .code {
+    background: var(--ink-2); border: 1px solid var(--rule); border-radius: 3px;
+    padding: 16px 18px; font-size: 13px; line-height: 1.85; overflow-x: auto;
+    white-space: pre; color: var(--paper-2);
+  }
+  .code .c { color: #5f5c55; }
+  .code .p { color: var(--accent); }
+  .code .s { color: var(--ok); }
+
+  .copy-line {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    background: var(--ink-2); border: 1px solid var(--rule); border-radius: 3px;
+    padding: 12px 14px; font-size: 13px; margin-top: 30px;
+  }
+  .copy-line code { color: var(--paper); }
+  .copy-line .p { color: var(--accent); }
+  button.copy {
+    margin-left: auto; font-family: var(--mono); font-size: 11px; letter-spacing: .12em;
+    text-transform: uppercase; background: transparent; color: var(--dim);
+    border: 1px solid var(--rule); border-radius: 2px; padding: 5px 10px; cursor: pointer;
+    transition: color .16s, border-color .16s;
+  }
+  button.copy:hover { color: var(--accent); border-color: var(--accent-dim); }
+
+  /* ---------- sections ---------- */
+  section { padding: 74px 0; border-top: 1px solid var(--rule); }
+
+  .sec-head { display: flex; align-items: baseline; gap: 16px; margin-bottom: 40px; flex-wrap: wrap; }
+  .sec-head h2 { font-size: clamp(28px, 4vw, 42px); line-height: 1.06; }
+  .sec-head .num { font-size: 11px; letter-spacing: .26em; color: var(--accent-dim); font-weight: 600; }
+
+  /* ---------- layers ladder ---------- */
+  .ladder { display: grid; gap: 0; }
+  .layer {
+    display: grid; grid-template-columns: 30px 1fr 1.15fr; gap: 22px; align-items: start;
+    padding: 22px 0; border-top: 1px solid var(--rule);
+  }
+  .layer:last-child { border-bottom: 1px solid var(--rule); }
+  .layer .idx { font-size: 11px; color: var(--accent-dim); font-weight: 600; padding-top: 5px; }
+  .layer h3 { font-family: var(--mono); font-weight: 500; font-size: 15px; letter-spacing: -.01em; }
+  .layer code { font-size: 12.5px; color: var(--accent); display: block; margin-top: 5px; font-weight: 400; }
+  .layer p { margin: 0; color: var(--paper-2); font-size: 14px; }
+  .layer:hover { background: linear-gradient(90deg, rgba(255,194,71,.05), transparent 60%); }
+
+  /* ---------- factors ---------- */
+  .factors { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1px; background: var(--rule); border: 1px solid var(--rule); }
+  .factor { background: var(--ink); padding: 26px 24px; transition: background .2s; }
+  .factor:hover { background: var(--ink-3); }
+  .factor .ico { font-size: 20px; line-height: 1; }
+  .factor h3 { font-family: var(--mono); font-weight: 500; font-size: 14.5px; margin: 14px 0 8px; }
+  .factor p { margin: 0; font-size: 13.5px; color: var(--paper-2); }
+  .factor .tag {
+    display: inline-block; margin-top: 12px; font-size: 10px; letter-spacing: .16em;
+    text-transform: uppercase; color: var(--dim); border: 1px solid var(--rule);
+    border-radius: 2px; padding: 3px 8px;
+  }
+
+  /* ---------- candour block ---------- */
+  .candour { border: 1px solid var(--accent-dim); border-radius: 3px; padding: 30px 28px; background: linear-gradient(180deg, rgba(255,194,71,.05), transparent); }
+  .candour h3 { font-family: var(--mono); font-size: 14px; font-weight: 600; letter-spacing: .04em; color: var(--accent); margin-bottom: 16px; }
+  .candour ul { margin: 0; padding-left: 20px; }
+  .candour li { margin-bottom: 11px; color: var(--paper-2); font-size: 14px; }
+  .candour li::marker { color: var(--accent-dim); }
+  .candour li b { color: var(--paper); font-weight: 500; }
+
+  /* ---------- footer ---------- */
+  footer { border-top: 1px solid var(--rule); padding: 46px 0 64px; color: var(--dim); font-size: 12.5px; }
+  .foot-grid { display: flex; justify-content: space-between; gap: 30px; flex-wrap: wrap; }
+  footer a { color: var(--paper-2); text-decoration: none; border-bottom: 1px solid var(--rule); }
+  footer a:hover { color: var(--accent); border-color: var(--accent-dim); }
+  .foot-links { display: grid; gap: 7px; }
+
+  /* ---------- reveal ---------- */
+  .rise { opacity: 0; transform: translateY(16px); transition: opacity .6s ease, transform .6s cubic-bezier(.2,.7,.3,1); }
+  .rise.in { opacity: 1; transform: none; }
+
+  @media (max-width: 860px) {
+    .hero { grid-template-columns: 1fr; gap: 44px; padding: 56px 0 44px; }
+    .factors { grid-template-columns: 1fr; }
+    .layer { grid-template-columns: 24px 1fr; }
+    .layer p { grid-column: 2; }
+    .sheet { transform: none; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation-duration: .001ms !important; animation-delay: 0ms !important; transition-duration: .001ms !important; }
+    html { scroll-behavior: auto; }
+    .rise { opacity: 1; transform: none; }
+  }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+  <header>
+    <div class="bar-top">
+      <div class="brand"><span class="sh">shush</span> 🤫</div>
+      <nav class="top-links">
+        <a href="#layers">Layers</a>
+        <a href="#unlock">Unlock</a>
+        <a href="#limits">Limits</a>
+        <a href="#start">Install</a>
+        <a href="https://github.com/latranchee/shush">GitHub ↗</a>
+      </nav>
+    </div>
+  </header>
+
+  <div class="hero">
+    <div>
+      <div class="eyebrow">Windows · PowerShell · No dependencies</div>
+      <h1 class="display">API keys<br>that stay <em>quiet</em>.</h1>
+      <p class="lede">
+        Secrets live in <b>Windows Credential Manager</b>, not in <code>.env</code> files,
+        project folders, or your shell history. Launch any tool with the key injected
+        into that process alone — or encrypt it at rest so a shared machine
+        can't give it up at all.
+      </p>
+      <div class="cta-row">
+        <a class="btn" href="#start">Get started</a>
+        <a class="btn ghost" href="https://github.com/latranchee/shush">Read the source</a>
+      </div>
+    </div>
+
+    <div class="sheet">
+      <div class="sheet-head">
+        <span>vault · local machine</span>
+        <span>shush list</span>
+      </div>
+      <div class="row"><span class="k">openai_api_key</span>      <span class="redact d1"><span>sk-proj-9Kd2mQ</span></span></div>
+      <div class="row"><span class="k">anthropic_api_key</span>   <span class="redact d2"><span>sk-ant-a04Lz1</span></span></div>
+      <div class="row"><span class="k">github_token</span>        <span class="redact d3"><span>ghp_7Xr4bTn0</span></span></div>
+      <div class="row"><span class="k">r2_secret_access_key</span><span class="redact d4"><span>b91fe0c7aa</span></span></div>
+      <div class="stamp">NO PLAINTEXT</div>
+    </div>
+  </div>
+
+  <section id="layers">
+    <div class="sec-head rise">
+      <span class="num">01</span>
+      <h2>How protected do you want to be?</h2>
+    </div>
+    <p class="lede rise" style="max-width:58ch; margin-top:-22px; margin-bottom:34px;">
+      Four independent layers. Each is opt-in, each answers a different question
+      about who you're defending against. Start at the top and add what you need.
+    </p>
+
+    <div class="ladder">
+      <div class="layer rise">
+        <div class="idx">01</div>
+        <div><h3>Vault<code>set · run</code></h3></div>
+        <p>Keys stop living in <code>.env</code> files, repos, screenshots and shell history. The value reaches one child process and nothing else.</p>
+      </div>
+      <div class="layer rise">
+        <div class="idx">02</div>
+        <div><h3>Protected secrets<code>enroll · protect</code></h3></div>
+        <p>Encrypted at rest under a key only your unlock factor recovers. Someone else at a shared or public machine gets ciphertext.</p>
+      </div>
+      <div class="layer rise">
+        <div class="idx">03</div>
+        <div><h3>Proxy mode<code>proxy start</code></h3></div>
+        <p>The tool never receives the key. It calls <code>127.0.0.1</code>, the proxy injects the credential upstream and strips whatever the client sent.</p>
+      </div>
+      <div class="layer rise">
+        <div class="idx">04</div>
+        <div><h3>Service mode<code>install_proxy_service.ps1</code></h3></div>
+        <p>The vault moves to an account you can't read from your own session. Create, list and delete still work; reading simply isn't implemented.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="unlock">
+    <div class="sec-head rise">
+      <span class="num">02</span>
+      <h2>Four ways to unlock</h2>
+    </div>
+    <p class="lede rise" style="max-width:58ch; margin-top:-22px; margin-bottom:34px;">
+      One master key encrypts your secrets; every enrolled factor wraps its own copy.
+      Enroll two, and losing one is an inconvenience rather than a lost vault.
+    </p>
+
+    <div class="factors">
+      <div class="factor rise">
+        <div class="ico">⌨️</div>
+        <h3>Passphrase</h3>
+        <p>PBKDF2-SHA256 at 600,000 iterations. Works anywhere, nothing to carry, nothing to lose.</p>
+        <span class="tag">Always available</span>
+      </div>
+      <div class="factor rise">
+        <div class="ico">👤</div>
+        <h3>Windows Hello</h3>
+        <p>PIN, fingerprint or face. The wrapping key is TPM-bound, so a copied vault is inert on any other machine.</p>
+        <span class="tag">Needs a TPM</span>
+      </div>
+      <div class="factor rise">
+        <div class="ico">🔑</div>
+        <h3>FIDO2 security key</h3>
+        <p>A YubiKey via the CTAP2 <code>hmac-secret</code> extension. Physical touch on every unlock — the secret never leaves the token.</p>
+        <span class="tag">Strongest</span>
+      </div>
+      <div class="factor rise">
+        <div class="ico">💾</div>
+        <h3>Keyfile</h3>
+        <p>A thumbdrive. Plug it in and secrets open with no typing at all; unplug it and the vault is shut. Matched by id, so drive letters can change.</p>
+        <span class="tag">Zero friction</span>
+      </div>
+    </div>
+  </section>
+
+  <section id="start">
+    <div class="sec-head rise">
+      <span class="num">03</span>
+      <h2>Sixty seconds</h2>
+    </div>
+
+    <div class="copy-line rise">
+      <code><span class="p">git</span> clone https://github.com/latranchee/shush.git</code>
+      <button class="copy" data-copy="git clone https://github.com/latranchee/shush.git">Copy</button>
+    </div>
+
+    <div class="code rise" style="margin-top:16px;"><span class="c"># store a key — prompts securely, never echoes, never hits disk</span>
+<span class="p">shush</span> set openai_api_key
+
+<span class="c"># run any tool with the key in its environment and nowhere else</span>
+<span class="p">shush</span> run codex <span class="s">--env</span> OPENAI_API_KEY=openai_api_key
+
+<span class="c"># on a shared machine: encrypt it, unlock with a thumbdrive</span>
+<span class="p">shush</span> enroll <span class="s">--keyfile</span>
+<span class="p">shush</span> protect openai_api_key
+
+<span class="c"># or let the agent call the API without ever holding the key</span>
+<span class="p">shush</span> proxy start</div>
+
+    <p class="lede rise" style="margin-top:26px;">
+      Requires Windows 10/11 and either Windows PowerShell 5.1 (built in) or
+      PowerShell 7+. There is nothing to build and nothing to install
+      system-wide — it's PowerShell and the Win32 credential APIs.
+    </p>
+  </section>
+
+  <section id="limits">
+    <div class="sec-head rise">
+      <span class="num">04</span>
+      <h2>What it doesn't do</h2>
+    </div>
+
+    <div class="candour rise">
+      <h3>▲ Read this before trusting it with anything</h3>
+      <ul>
+        <li><b>It can't protect an unlocked session.</b> Once you unlock a key to use it, the plaintext is in memory and in the child process. Nothing here changes that.</li>
+        <li><b>A keyfile is a bearer token.</b> Anyone who copies it holds the vault, and copying leaves no trace. Only the FIDO2 factor resists that, because its secret never leaves the token.</li>
+        <li><b>TOTP is not offered on purpose.</b> An authenticator app verifies, it doesn't encrypt — and verifying needs the seed stored on the same machine as the keys it guards.</li>
+        <li><b>Hello and FIDO2 are not yet hardware-verified.</b> The passphrase and keyfile factors are covered by automated tests on both PowerShell hosts. The other two are implemented and test-covered in software, but haven't been run against a real TPM or token. Don't make either your only factor until you've run the hardware suite.</li>
+        <li><b>It is not a defence against a hostile administrator</b> on the machine, and it never claimed to be.</li>
+      </ul>
+    </div>
+  </section>
+
+  <footer>
+    <div class="foot-grid">
+      <div>
+        <div class="brand" style="margin-bottom:8px;"><span class="sh">shush</span> 🤫</div>
+        <div>Local Windows API-key manager.<br>Built for developer tools, AI agents, and scripts.</div>
+      </div>
+      <div class="foot-links">
+        <a href="https://github.com/latranchee/shush">Source on GitHub</a>
+        <a href="https://github.com/latranchee/shush/blob/main/docs/protected_secrets.md">Protected secrets</a>
+        <a href="https://github.com/latranchee/shush/blob/main/docs/security_model.md">Security model</a>
+        <a href="https://github.com/latranchee/shush/blob/main/docs/proxy.md">Proxy mode</a>
+        <a href="https://github.com/latranchee/shush/blob/main/AGENTS.md">For AI agents</a>
+      </div>
+    </div>
+  </footer>
+
+</div>
+
+<script>
+  // Let the "keys" show for a beat, then black them out.
+  window.addEventListener('load', function () {
+    document.querySelectorAll('.redact').forEach(function (el, i) {
+      setTimeout(function () { el.classList.add('done'); }, 560 + i * 170);
+    });
+  });
+
+  // Scroll reveals.
+  var io = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); }
+    });
+  }, { threshold: .12, rootMargin: '0px 0px -40px 0px' });
+  document.querySelectorAll('.rise').forEach(function (el, i) {
+    el.style.transitionDelay = (i % 4) * 60 + 'ms';
+    io.observe(el);
+  });
+
+  // Copy button.
+  document.querySelectorAll('button.copy').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      navigator.clipboard.writeText(btn.dataset.copy).then(function () {
+        var was = btn.textContent;
+        btn.textContent = 'Copied';
+        setTimeout(function () { btn.textContent = was; }, 1400);
+      });
+    });
+  });
+</script>
+
+</body>
+</html>
