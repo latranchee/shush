@@ -113,6 +113,36 @@ this means for you as an agent:
 - Setup/teardown is `install_proxy_service.ps1` (needs elevation - ask the
   user to run it). Full docs: `docs/service_mode.md`.
 
+## Protected secrets (shared machines)
+
+If the user is on a public or shared computer, a stored secret is readable by
+anyone who can act as their Windows user. `protect` encrypts it at rest so
+reading it requires an unlock factor:
+
+```powershell
+.\secret_manager.ps1 enroll --passphrase     # or --hello, --yubikey, --keyfile
+.\secret_manager.ps1 protect openai_api_key
+```
+
+What this means for you as an agent:
+
+- Reading a protected secret normally **requires a human**: a typed passphrase,
+  a Hello gesture, or a physical touch on a security key. Do not try to work
+  around it, and do not suggest caching the passphrase to a file.
+- The keyfile factor is the exception: with the drive plugged in, unlock is
+  automatic. That is the user's deliberate trade, not a hole to widen - never
+  copy a keyfile anywhere, and never move one to non-removable storage.
+- Tell the user to enroll **two** factors. A lost sole factor means those
+  secrets are unrecoverable and the API keys must be re-issued.
+- `vault_keys.json` holds only wrapped key material and is gitignored. It is
+  safe to back up and worth backing up.
+- Never propose TOTP/Google Authenticator as a factor. TOTP verifies rather
+  than encrypts, and verification needs the seed on the same machine as the
+  secrets, so it protects nothing here.
+- Protected values cap at 895 bytes, against 1280 unprotected.
+
+Full design and threat model: `docs/protected_secrets.md`.
+
 ## Hard rules when working in this repo
 
 - **Never print, log, or write a secret value** — not to stdout, stderr,
@@ -128,23 +158,37 @@ this means for you as an agent:
 ## Layout
 
 ```text
-secret_manager.ps1        # CLI entry point (set/create/list/exists/delete/run/proxy)
+secret_manager.ps1        # CLI entry point (set/create/list/exists/delete/run/
+                          # proxy/enroll/protect/unprotect/slots)
 install_proxy_service.ps1 # service-mode installer (account, task, migration)
 modules/
   credential_store.psm1   # Win32 CredRead/CredWrite/CredDelete/CredEnumerate
   process_runner.psm1     # env-mapping parsing + scrubbed child launch
   proxy_server.psm1       # localhost credential-injecting proxy
   admin_pipe.psm1         # write-only named-pipe admin channel (service mode)
+  vault_crypto.psm1       # AES-256-CBC + HMAC-SHA256 envelope for protected values
+  vault_keyslots.psm1     # master key wrapped once per enrolled unlock factor
+  factor_hello.psm1       # Windows Hello unlock factor (TPM-backed signature)
+  hello_helper.ps1        # WinRT half of the Hello factor (needs PS 5.1)
+  factor_fido2.psm1       # FIDO2 unlock factor (CTAP2 hmac-secret)
+  fido2_native.psm1       # CTAP2-over-USB-HID transport + CBOR (C# interop)
+  factor_keyfile.psm1     # keyfile (thumbdrive) unlock factor
 tests/
   credential_store.Tests.ps1   # Pester unit tests
   process_runner.Tests.ps1     # Pester unit tests
   proxy_server.Tests.ps1       # Pester unit tests (routing, config, headers)
   admin_pipe.Tests.ps1         # Pester unit tests (protocol, write-only ops)
+  vault_crypto.Tests.ps1       # Pester unit tests (envelope, KDF, tamper checks)
+  vault_keyslots.Tests.ps1     # Pester unit tests (slot wrap/unwrap, slot file)
+  factor_keyfile.Tests.ps1     # Pester unit tests (keyfile format, id matching)
   e2e_secret_manager.ps1       # full round-trip against the real vault
   e2e_proxy.ps1                # proxy round-trip via a local echo upstream
   e2e_admin_pipe.ps1           # service-mode pipe round-trip (same-user sim)
+  e2e_protected_secrets.ps1    # protect/unprotect round-trip, throwaway slot file
+  e2e_hardware_factors.ps1     # INTERACTIVE: Hello + FIDO2 (skips if absent)
   fixtures/                    # child-process + echo-server fixtures
-docs/                     # overview, architecture, commands, security, proxy, service mode
+docs/                     # overview, architecture, commands, security, proxy,
+                          # service mode, protected secrets
 .agents/skills/           # agent skills (createProxy)
 ```
 
@@ -179,6 +223,15 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\e2e_secret_manag
 # Proxy end-to-end: offline — throwaway secret + local echo upstream; proves
 # credential injection, client-auth stripping, limits, and log redaction.
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\e2e_proxy.ps1
+
+# Protected secrets end-to-end: throwaway secret + throwaway slot file
+# (SHUSH_VAULT_KEYS); proves the stored blob is ciphertext, that `run`
+# decrypts, and that overwrite/delete keep protection state consistent.
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\e2e_protected_secrets.ps1
+
+# Hardware factors — INTERACTIVE, asks for a Hello gesture and key touches.
+# Skips (does not fail) whichever hardware is absent, so it is safe to run.
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\e2e_hardware_factors.ps1
 ```
 
 Run both e2e scripts after any change to `secret_manager.ps1` or `modules/`.

@@ -63,6 +63,9 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 | `delete <name> [--if-exists]` | Remove a secret (`--if-exists` = idempotent) |
 | `run <cmd> [args...] --env ENV_VAR=secret_name` | Launch a command with secrets injected |
 | `proxy start [--port 8765] [--config proxy.json]` | Localhost proxy that injects keys upstream — clients never see them |
+| `enroll --passphrase\|--hello\|--yubikey\|--keyfile` | Add an unlock factor for protected secrets |
+| `protect <name>` / `unprotect <name>` | Encrypt one secret at rest, or undo it |
+| `slots [--slot <id>]` | List enrolled unlock factors, or remove one |
 
 `run` also accepts `--env-optional ENV_VAR=secret_name` for secrets that may
 legitimately be absent: the child still launches, with that variable unset and
@@ -71,6 +74,45 @@ a warning on stderr. See `docs/commands.md` for full details.
 `create` is the quick one-liner (`shush create openai_api_key sk-...`) — handy
 for scripts, but the value lands in your shell history; use `set` when that
 matters.
+
+## Protected secrets: shared and public computers
+
+Credential Manager scopes secrets to your Windows user, so on a shared machine
+a stored key is one `CredRead` away from whoever sits down next. `protect`
+encrypts a secret at rest under a master key that only an unlock factor can
+recover — so what remains in Credential Manager is ciphertext:
+
+```powershell
+.\secret_manager.ps1 enroll --keyfile         # writes shush.key to your thumbdrive
+.\secret_manager.ps1 enroll --passphrase      # enroll two: a lost drive would
+                                              # otherwise be a lost vault
+.\secret_manager.ps1 protect openai_api_key
+```
+
+Four unlock factors, any of which opens the same vault:
+
+- **Passphrase** — PBKDF2-SHA256, 600k iterations. Works anywhere, nothing to
+  carry, ~2s on Windows PowerShell 5.1.
+- **Windows Hello** — PIN, fingerprint, or face. TPM-backed, so a copied vault
+  will not open on another machine.
+- **FIDO2 security key** — a YubiKey or compatible, via the CTAP2
+  `hmac-secret` extension. Requires a physical touch on every unlock, so a key
+  in your pocket cannot be used by someone at the keyboard.
+- **Keyfile** — a thumbdrive. Plug it in and secrets open with no typing at
+  all; unplug it and the vault is shut. Slots match the file by id rather than
+  path, so a changed drive letter doesn't matter. It's a bearer file, though:
+  anyone who copies it holds the vault, so `--with-passphrase` can bind a
+  passphrase to it.
+
+Protection is per-secret, and reading one prompts for an unlock; the key is
+held for that process only and never cached to disk. `proxy start` unlocks once
+and holds it for the session. Design, threat model, and recovery notes:
+`docs/protected_secrets.md`.
+
+Note the honest limit: this protects the value **at rest**, against someone
+using the machine at another time. Nothing protects a session that is already
+unlocked. And a TOTP app cannot serve as a factor — TOTP verifies rather than
+encrypts, and verifying needs the seed stored on the same machine as the keys.
 
 ## Service mode: protect secrets from your own tools
 

@@ -148,6 +148,71 @@ name and the vault key is injected upstream; the client never sees it.
 
 Full reference (routing, config format, controls, errors): `proxy.md`.
 
+If a configured provider uses a protected secret, `proxy start` unlocks before
+the listener starts and holds the key for its lifetime.
+
+## enroll
+
+Add an unlock factor for protected secrets.
+
+```powershell
+.\secret_manager.ps1 enroll --passphrase [--label <text>]
+.\secret_manager.ps1 enroll --hello
+.\secret_manager.ps1 enroll --yubikey
+.\secret_manager.ps1 enroll --keyfile [<path>] [--with-passphrase]
+```
+
+Expected behavior:
+
+- The first enrollment creates the vault master key; later ones re-wrap the
+  existing key, so an already-enrolled factor must unlock first.
+- Enroll at least two. Removing the last slot is refused while secrets are
+  protected, but a lost sole factor means those secrets are unrecoverable.
+- `--hello` and `--yubikey` report why they cannot enroll (no TPM, no Hello
+  PIN, no key attached, no `hmac-secret` support) rather than failing vaguely.
+- Bare `--keyfile` writes `shush.key` to the first ready removable drive; a
+  keyfile already there is reused, not replaced, unless `--force` is given.
+- `--with-passphrase` binds a passphrase to a keyfile slot, so a copied
+  keyfile alone cannot unlock it.
+- `--passphrase-stdin` reads the passphrase from a pipe for automation.
+
+## protect / unprotect
+
+Encrypt one secret at rest, or return it to plain vault storage.
+
+```powershell
+.\secret_manager.ps1 protect openai_api_key
+.\secret_manager.ps1 unprotect openai_api_key
+```
+
+Expected behavior:
+
+- `protect` verifies the encrypted value decrypts back to the original before
+  overwriting the stored secret.
+- Reading a protected secret (`run`, `proxy`) prompts for an unlock factor; the
+  master key is held for that process only and never written to disk. A
+  plugged-in keyfile satisfies it with no prompt at all.
+- `--keyfile <path>` points at a keyfile directly; otherwise removable drives
+  are scanned and matched by the id recorded in the slot, so drive letters can
+  change freely.
+- Overwriting a protected secret with `set`/`create` re-encrypts the new value
+  rather than silently downgrading it to plaintext.
+- Protected values are limited to 895 bytes, against 1280 unprotected.
+- Both refuse to run in service mode, where secrets already live in an account
+  you cannot read.
+
+## slots
+
+List enrolled unlock factors, or remove one.
+
+```powershell
+.\secret_manager.ps1 slots
+.\secret_manager.ps1 slots --slot a1b2c3d4e5f6
+```
+
+Removal is refused when it would leave no way to open a protected secret.
+Design and threat model: `protected_secrets.md`.
+
 ## Recommended Provider Setup
 
 ```powershell
