@@ -18,6 +18,26 @@ $script:envInheritWhitelist = @(
     'OS', 'PSMODULEPATH'
 )
 
+function expand_env_mappings {
+    <#
+    .SYNOPSIS
+    Pure: split comma-joined ENV=secret tokens into individual mappings.
+
+    .DESCRIPTION
+    A raw command line (NSSM AppParameters, powershell.exe -File) has no
+    PowerShell array syntax, so `-secret_env "A=a","B=b"` arrives as the single
+    token `A=a,B=b`. Env-var and secret names can never contain commas, so
+    splitting on ',' is lossless. Blank fragments (stray commas) are dropped.
+    #>
+    param([string[]]$Tokens = @())
+
+    @($Tokens |
+        Where-Object { $_ } |
+        ForEach-Object { $_ -split ',' } |
+        ForEach-Object { $_.Trim() } |
+        Where-Object { $_ })
+}
+
 function parse_secret_env_mapping {
     param([string]$Mapping)
 
@@ -282,6 +302,7 @@ function invoke_secret_process {
 }
 
 Export-ModuleMember -Function @(
+    'expand_env_mappings',
     'parse_secret_env_mapping',
     'resolve_secret_env_mappings',
     'quote_native_argument',

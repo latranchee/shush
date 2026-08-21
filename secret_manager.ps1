@@ -13,10 +13,14 @@ param(
     [Alias('if-exists')]
     [switch]$if_exists,
 
-    [Alias('env')]
+    # No [Alias('env')] here on purpose: an alias would let the binder capture
+    # `--env` flags meant for run's hand-parser below. Bound once, a repeated
+    # `--env A=x --env B=y` either collapses or errors ("specified more than
+    # once") depending on host, so services injecting 2+ secrets from a raw
+    # command line (-File) could never launch. `-env`/`--env` both fall through
+    # to $arguments and are promoted there.
     [string[]]$secret_env,
 
-    [Alias('env-optional')]
     [string[]]$secret_env_optional,
 
     [int]$port = 8765,
@@ -74,14 +78,18 @@ if ($null -ne $arguments) {
             '^--if-exists$' { $if_exists = $true }
             '^--env$' {
                 if ($i + 1 -lt $rest.Count) {
-                    $current = if ($null -ne $secret_env) { @($secret_env) } else { @() }
+                    # @() around the whole if-expression: a 1-element array
+                    # returned from `if` unrolls to a scalar string, and
+                    # string + array is string CONCATENATION ("A=x" + "B=y"
+                    # -> "A=xB=y"), silently merging mappings.
+                    $current = @(if ($null -ne $secret_env) { $secret_env } else { @() })
                     $secret_env = $current + @($rest[$i + 1])
                     $i += 1
                 } else { $consumed = $false; $tail += $tok }
             }
             '^--env-optional$' {
                 if ($i + 1 -lt $rest.Count) {
-                    $current = if ($null -ne $secret_env_optional) { @($secret_env_optional) } else { @() }
+                    $current = @(if ($null -ne $secret_env_optional) { $secret_env_optional } else { @() })
                     $secret_env_optional = $current + @($rest[$i + 1])
                     $i += 1
                 } else { $consumed = $false; $tail += $tok }
@@ -943,8 +951,11 @@ function invoke_run_command {
         exit 1
     }
 
-    $mappings = @($secret_env | Where-Object { $_ })
-    $optionalMappings = @($secret_env_optional | Where-Object { $_ })
+    # expand_env_mappings splits comma-joined tokens: a raw command line
+    # (NSSM AppParameters, powershell -File) has no array syntax, so
+    # `-secret_env "A=a","B=b"` arrives here as the single token "A=a,B=b".
+    $mappings = @(expand_env_mappings -Tokens $secret_env)
+    $optionalMappings = @(expand_env_mappings -Tokens $secret_env_optional)
     if ($mappings.Count -eq 0 -and $optionalMappings.Count -eq 0) {
         Write-Host "ERROR: At least one --env or --env-optional ENV_VAR=secret_name mapping is required" -ForegroundColor Red
         exit 1

@@ -133,3 +133,30 @@ Describe "invoke_secret_process default Environment" {
         $result.error.code | Should -Be 'INVALID_PARAMS'
     }
 }
+
+Describe "expand_env_mappings" {
+    It "passes through distinct tokens unchanged" {
+        $result = @(expand_env_mappings -Tokens @('A=a', 'B=b'))
+        $result | Should -Be @('A=a', 'B=b')
+    }
+
+    It "splits a comma-joined token as produced by a raw -File command line" {
+        $result = @(expand_env_mappings -Tokens @('A=a,B=b,C=c'))
+        $result | Should -Be @('A=a', 'B=b', 'C=c')
+    }
+
+    It "splits comma-joined fragments inside a mixed token list" {
+        $result = @(expand_env_mappings -Tokens @('A=a,B=b', 'C=c'))
+        $result | Should -Be @('A=a', 'B=b', 'C=c')
+    }
+
+    It "drops blank fragments and trims whitespace" {
+        $result = @(expand_env_mappings -Tokens @('A=a, B=b,', '', $null))
+        $result | Should -Be @('A=a', 'B=b')
+    }
+
+    It "returns an empty array for empty or null input" {
+        @(expand_env_mappings -Tokens @()).Count | Should -Be 0
+        @(expand_env_mappings).Count | Should -Be 0
+    }
+}
