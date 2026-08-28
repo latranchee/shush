@@ -1,0 +1,44 @@
+{
+  "comment": "Shared test vectors for the shush cloud tier. Consumed by BOTH cloud/worker vitest specs and tests/cloud_client.Tests.ps1 so the PowerShell and TypeScript implementations cannot drift. PowerShell -match is case-insensitive by default, so the Pester suite must use -cmatch; JS regexes are case-sensitive by default.",
+  "secret_name_to_binding": [
+    { "name": "openai_api_key", "binding": "SK_OPENAI_API_KEY", "valid": true },
+    { "name": "anthropic_api_key", "binding": "SK_ANTHROPIC_API_KEY", "valid": true },
+    { "name": "a", "binding": "SK_A", "valid": true },
+    { "name": "k9_x", "binding": "SK_K9_X", "valid": true },
+    { "name": "quo_api_key", "binding": "SK_QUO_API_KEY", "valid": true },
+    { "name": "Openai_api_key", "binding": null, "valid": false },
+    { "name": "OPENAI_API_KEY", "binding": null, "valid": false },
+    { "name": "9lives", "binding": null, "valid": false },
+    { "name": "_leading", "binding": null, "valid": false },
+    { "name": "has-hyphen", "binding": null, "valid": false },
+    { "name": "has space", "binding": null, "valid": false },
+    { "name": "", "binding": null, "valid": false },
+    { "name": "café", "binding": null, "valid": false }
+  ],
+  "machine_tokens": [
+    { "token": "shm.abc123.dGhpcy1pcy1hLXNlY3JldC12YWx1ZQ", "valid": true, "id": "abc123" },
+    { "token": "shm.0f0f0f0f0f0f.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "valid": true, "id": "0f0f0f0f0f0f" },
+    { "token": "shm.abc123.with_under-and-dash_1234", "valid": true, "id": "abc123" },
+    { "token": "", "valid": false },
+    { "token": "shm.abc123", "valid": false },
+    { "token": "shm..dGhpc2lzYXNlY3JldHZhbHVlMTI", "valid": false },
+    { "token": "shx.abc123.dGhpc2lzYXNlY3JldHZhbHVlMTI", "valid": false },
+    { "token": "shm.ABC123.dGhpc2lzYXNlY3JldHZhbHVlMTI", "valid": false },
+    { "token": "shm.ab.dGhpc2lzYXNlY3JldHZhbHVlMTI", "valid": false },
+    { "token": "shm.abc123.short", "valid": false },
+    { "token": "shm.abc123.bad!chars#here-1234567890", "valid": false },
+    { "token": "shm.abc123.dGhpc2lz.YXNlY3JldA", "valid": false },
+    { "token": "Bearer shm.abc123.dGhpc2lzYXNlY3JldHZhbHVlMTI", "valid": false },
+    { "token": "sk-proj-abcdef1234567890", "valid": false }
+  ],
+  "provider_names": [
+    { "name": "openai", "valid": true },
+    { "name": "my_provider2", "valid": true },
+    { "name": "has-hyphen", "valid": false },
+    { "name": "Upper", "valid": false },
+    { "name": "2fast", "valid": false },
+    { "name": "", "valid": false }
+  ],
+  "credential_headers": ["authorization", "x-api-key", "x-goog-api-key", "api-key"],
+  "credential_query_param": "key"
+}

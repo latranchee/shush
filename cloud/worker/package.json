@@ -1,0 +1,20 @@
+{
+  "name": "shush-cloud-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "shush cloud: self-deployed Cloudflare Worker that injects provider API keys upstream so client machines never hold them",
+  "scripts": {
+    "test": "vitest run",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "types": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "1.1.1",
+    "@cloudflare/workers-types": "5.20260827.1",
+    "typescript": "5.9.2",
+    "vitest": "4.1.0",
+    "wrangler": "4.127.0"
+  }
+}

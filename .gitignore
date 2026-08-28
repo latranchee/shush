@@ -4,3 +4,8 @@ service_config.json
 logs/
 vault_keys.json
 vault_keys.json.tmp
+cloud_config.json
+cloud/worker/node_modules/
+cloud/worker/.wrangler/
+cloud/worker/dist/
+.playwright-mcp/

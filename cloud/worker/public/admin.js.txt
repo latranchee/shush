@@ -1,0 +1,260 @@
+// shush cloud admin UI.
+// Vanilla JS, no external resources (strict CSP), textContent-only rendering:
+// nothing from the API is ever assigned to innerHTML.
+'use strict';
+
+(function () {
+  var session = null;
+  var state = { machines: [], providers: [], config_version: 0, config_source: '' };
+
+  function $(id) { return document.getElementById(id); }
+
+  function banner(kind, message) {
+    var el = $('banner');
+    el.className = kind || '';
+    el.textContent = message || '';
+  }
+
+  function api(method, path, body) {
+    var headers = { 'content-type': 'application/json' };
+    if (session) headers['x-shush-session'] = session;
+    return fetch(path, {
+      method: method,
+      headers: headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }).then(function (resp) {
+      return resp.json().catch(function () { return {}; }).then(function (data) {
+        if (resp.status === 401) {
+          dropSession();
+          throw new Error('Session expired. Run `shush cloud open` for a fresh link.');
+        }
+        if (!resp.ok) {
+          var msg = data && data.error && data.error.message ? data.error.message : ('HTTP ' + resp.status);
+          throw new Error(msg);
+        }
+        return data;
+      });
+    });
+  }
+
+  function dropSession() {
+    session = null;
+    try { sessionStorage.removeItem('shush_session'); } catch (e) { }
+    $('app').hidden = true;
+    $('login').style.display = '';
+    $('conn').textContent = '';
+  }
+
+  function showApp() {
+    $('login').style.display = 'none';
+    $('app').hidden = false;
+    $('conn').textContent = 'connected';
+  }
+
+  // --- rendering (textContent only) ---
+
+  function el(tag, text, className) {
+    var node = document.createElement(tag);
+    if (text !== undefined && text !== null) node.textContent = text;
+    if (className) node.className = className;
+    return node;
+  }
+
+  function renderStatus() {
+    var pane = $('status-pane');
+    pane.textContent = '';
+    var total = 0;
+    state.machines.forEach(function (m) { total += m.total_count; });
+    pane.appendChild(el('span', state.machines.length + ' machine(s)'));
+    pane.appendChild(el('span', state.providers.length + ' provider(s)'));
+    pane.appendChild(el('span', total + ' request(s) served'));
+    pane.appendChild(el('span', 'config v' + state.config_version +
+      (state.config_source === 'kv_prev' ? ' (last-good fallback!)' : ''),
+      state.config_source === 'kv_prev' ? 'warn' : 'dim'));
+  }
+
+  function machineButtons(m, cell) {
+    var rotate = el('button', 'rotate');
+    rotate.addEventListener('click', function () {
+      if (!window.confirm('Rotate token for "' + m.label + '"? The old token keeps working for 5 minutes.')) return;
+      api('POST', '/api/machines/' + m.id + '/rotate').then(function (data) {
+        showToken(data.token, 'Rotated token for "' + m.label + '". The previous token expires in 5 minutes.');
+        refresh();
+      }).catch(function (e) { banner('error', e.message); });
+    });
+    cell.appendChild(rotate);
+
+    var toggle = el('button', m.disabled ? 'enable' : 'disable');
+    toggle.addEventListener('click', function () {
+      api('POST', '/api/machines/' + m.id + '/' + (m.disabled ? 'enable' : 'disable'))
+        .then(refresh).catch(function (e) { banner('error', e.message); });
+    });
+    cell.appendChild(toggle);
+
+    var revoke = el('button', 'revoke', 'danger');
+    revoke.addEventListener('click', function () {
+      if (!window.confirm('Revoke "' + m.label + '"? Its token stops working immediately.')) return;
+      api('DELETE', '/api/machines/' + m.id)
+        .then(refresh).catch(function (e) { banner('error', e.message); });
+    });
+    cell.appendChild(revoke);
+  }
+
+  function renderMatrix() {
+    var table = $('matrix');
+    table.textContent = '';
+    var providerNames = state.providers.map(function (p) { return p.name; });
+
+    var head = document.createElement('tr');
+    head.appendChild(el('th', 'machine'));
+    providerNames.forEach(function (name) { head.appendChild(el('th', name)); });
+    head.appendChild(el('th', 'today'));
+    head.appendChild(el('th', 'quota/day'));
+    head.appendChild(el('th', 'last seen'));
+    head.appendChild(el('th', ''));
+    table.appendChild(head);
+
+    if (state.machines.length === 0) {
+      var empty = document.createElement('tr');
+      var cell = el('td', 'No machines yet. Add one below, or run: shush cloud machine add <label>', 'dim');
+      cell.colSpan = providerNames.length + 5;
+      empty.appendChild(cell);
+      table.appendChild(empty);
+      return;
+    }
+
+    state.machines.forEach(function (m) {
+      var row = document.createElement('tr');
+      if (m.disabled) row.className = 'disabled-row';
+      var labelCell = el('td', m.label + ' ');
+      labelCell.appendChild(el('span', '(' + m.id + ')', 'dim'));
+      if (m.rotation_pending) labelCell.appendChild(el('span', ' rotating', 'warn'));
+      row.appendChild(labelCell);
+
+      providerNames.forEach(function (name) {
+        var cell = document.createElement('td');
+        var box = document.createElement('input');
+        box.type = 'checkbox';
+        box.checked = m.grants.indexOf(name) >= 0;
+        box.addEventListener('change', function () {
+          var grants = m.grants.slice();
+          var at = grants.indexOf(name);
+          if (box.checked && at < 0) grants.push(name);
+          if (!box.checked && at >= 0) grants.splice(at, 1);
+          api('PUT', '/api/machines/' + m.id + '/grants', { grants: grants })
+            .then(refresh).catch(function (e) { banner('error', e.message); refresh(); });
+        });
+        cell.appendChild(box);
+        row.appendChild(cell);
+      });
+
+      row.appendChild(el('td', String(m.today_count), 'num'));
+
+      var quotaCell = document.createElement('td');
+      var quota = document.createElement('input');
+      quota.type = 'number';
+      quota.min = '0';
+      quota.style.width = '80px';
+      quota.placeholder = 'none';
+      if (m.daily_quota !== null) quota.value = String(m.daily_quota);
+      quota.addEventListener('change', function () {
+        var value = quota.value === '' ? null : parseInt(quota.value, 10);
+        api('PUT', '/api/machines/' + m.id + '/quota', { daily_quota: value })
+          .then(refresh).catch(function (e) { banner('error', e.message); refresh(); });
+      });
+      quotaCell.appendChild(quota);
+      row.appendChild(quotaCell);
+
+      row.appendChild(el('td', m.last_seen ? new Date(m.last_seen).toLocaleString() : 'never', 'dim'));
+
+      var actions = document.createElement('td');
+      machineButtons(m, actions);
+      row.appendChild(actions);
+      table.appendChild(row);
+    });
+  }
+
+  function renderProviders() {
+    var table = $('providers');
+    table.textContent = '';
+    var head = document.createElement('tr');
+    ['name', 'secret', 'auth', 'base_url', 'key'].forEach(function (h) { head.appendChild(el('th', h)); });
+    table.appendChild(head);
+    state.providers.forEach(function (p) {
+      var row = document.createElement('tr');
+      row.appendChild(el('td', p.name));
+      row.appendChild(el('td', p.secret, 'dim'));
+      row.appendChild(el('td', p.auth, 'dim'));
+      row.appendChild(el('td', p.base_url, 'dim'));
+      row.appendChild(el('td', p.secret_available ? 'set' : 'MISSING', p.secret_available ? 'ok' : 'bad'));
+      table.appendChild(row);
+    });
+  }
+
+  function showToken(token, hint) {
+    $('token-value').textContent = token;
+    $('token-hint').textContent = hint || '';
+    $('token-modal').className = 'open';
+  }
+
+  function refresh() {
+    return api('GET', '/api/status').then(function (data) {
+      state = data;
+      renderStatus();
+      renderMatrix();
+      renderProviders();
+    }).catch(function (e) { banner('error', e.message); });
+  }
+
+  // --- wiring ---
+
+  $('token-done').addEventListener('click', function () {
+    $('token-value').textContent = '';
+    $('token-modal').className = '';
+  });
+
+  $('add-machine').addEventListener('click', function () {
+    var label = $('new-label').value.trim();
+    if (!label) { banner('error', 'Give the machine a label first.'); return; }
+    api('POST', '/api/machines', { label: label, grants: [] }).then(function (data) {
+      $('new-label').value = '';
+      banner('info', 'Machine "' + label + '" added. Grant it providers in the matrix.');
+      showToken(data.token, 'On the target machine: shush create shush_cloud_token <token>');
+      refresh();
+    }).catch(function (e) { banner('error', e.message); });
+  });
+
+  function boot() {
+    try { session = sessionStorage.getItem('shush_session'); } catch (e) { }
+
+    var hash = window.location.hash;
+    var codeMatch = /^#code=([A-Za-z0-9_-]+)$/.exec(hash);
+    if (codeMatch) {
+      // Scrub the one-time code from the URL bar and history immediately.
+      try { history.replaceState(null, '', window.location.pathname); } catch (e) { }
+      fetch('/api/session', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ code: codeMatch[1] }),
+      }).then(function (resp) { return resp.json(); }).then(function (data) {
+        if (data && data.session) {
+          session = data.session;
+          try { sessionStorage.setItem('shush_session', session); } catch (e) { }
+          showApp();
+          refresh();
+        } else {
+          var msg = data && data.error && data.error.message ? data.error.message : 'Login failed.';
+          banner('error', msg);
+        }
+      }).catch(function () { banner('error', 'Login failed.'); });
+      return;
+    }
+
+    if (session) {
+      showApp();
+      refresh();
+    }
+  }
+
+  boot();
+})();
