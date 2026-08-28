@@ -137,6 +137,17 @@ Expected behavior:
 - Return the child command exit code.
 - Do not print resolved values.
 
+With `--cloud`, mappings become `ENV_VAR=provider` and the child talks to the
+deployed Cloudflare Worker with only a machine token (`cloud.md`):
+
+```powershell
+.\secret_manager.ps1 run --cloud codex --env OPENAI_API_KEY=openai
+```
+
+Note: in cloud mode only run's own flags (`--env`, `--local`, `--cloud`) are
+consumed by shush; every other token after the command name goes to the child
+untouched.
+
 ## proxy
 
 Start the localhost credential-injecting proxy. Clients call providers by
@@ -150,6 +161,30 @@ Full reference (routing, config format, controls, errors): `proxy.md`.
 
 If a configured provider uses a protected secret, `proxy start` unlocks before
 the listener starts and holds the key for its lifetime.
+
+## cloud
+
+Deploy and manage the Cloudflare Worker tier: provider keys become worker
+secrets, client machines get revocable tokens checked against a
+machines × providers grant matrix.
+
+```powershell
+.\secret_manager.ps1 cloud deploy [--reset-admin]
+.\secret_manager.ps1 cloud status [--probe]
+.\secret_manager.ps1 cloud secret set|delete <name>
+.\secret_manager.ps1 cloud machine add <label> [--grant a,b] [--save]
+.\secret_manager.ps1 cloud machine list|revoke|rotate|disable|enable <id>
+.\secret_manager.ps1 cloud machine grant|ungrant <id> --grant <providers>
+.\secret_manager.ps1 cloud backup|restore <file>
+.\secret_manager.ps1 cloud env <provider> [--show]
+.\secret_manager.ps1 cloud open
+.\secret_manager.ps1 cloud admin-token --show
+```
+
+`--cloud` exists only on `run` and `list`; `--local --cloud` is an error; the
+cloud family never touches service-mode plumbing. Machine and admin tokens
+live in the local vault as `shush_cloud_token` / `shush_cloud_admin_token`.
+Full reference, trust model, and client caveats: `cloud.md`.
 
 ## enroll
 

@@ -462,6 +462,11 @@
         <div><h3>Service mode<code>install_proxy_service.ps1</code></h3></div>
         <p>The vault moves to a Windows account you cannot read from your own session. No agent running as you can retrieve a value, because <b>there is no read operation to call</b>. Create, list and delete keep working through a write-only pipe.</p>
       </div>
+      <div class="layer rise">
+        <div class="idx">05</div>
+        <div><h3>Cloud proxy<code>shush cloud deploy</code></h3></div>
+        <p><b>No machine of yours holds the key at all.</b> The same injecting proxy, deployed as a Cloudflare Worker into your own account: keys become write-only worker secrets, and each laptop, CI runner, or teammate gets a revocable token scoped by a per-machine grant matrix. <span class="warn">The token is a live, scoped credential</span> — revoke it in one click; the provider key never needs rotating.</p>
+      </div>
     </div>
 
     <p class="sec-intro rise" style="margin: 32px 0 0;">
@@ -647,6 +652,7 @@ codex                            <span class="c"># works. never sees your key.</
       <div class="foot-links">
         <a href="https://github.com/latranchee/shush">Source on GitHub</a>
         <a href="https://github.com/latranchee/shush/blob/main/docs/proxy.md">Proxy mode</a>
+        <a href="https://github.com/latranchee/shush/blob/main/docs/cloud.md">Cloud proxy</a>
         <a href="https://github.com/latranchee/shush/blob/main/docs/service_mode.md">Service mode</a>
         <a href="https://github.com/latranchee/shush/blob/main/docs/protected_secrets.md">Protected secrets</a>
         <a href="https://github.com/latranchee/shush/blob/main/AGENTS.md">Instructions for agents</a>

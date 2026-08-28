@@ -43,23 +43,42 @@ about who you are defending against:
 | Protected secrets | `enroll` / `protect` | Another person using a shared or public machine |
 | Proxy mode | `proxy start` | The tool or agent itself holding the key |
 | Service mode | `install_proxy_service.ps1` | Any process running under your own account |
+| Cloud proxy | `cloud deploy` | Any of your machines — or a teammate — ever holding the key |
 
 The vault alone assumes the Windows account is yours, because Credential
 Manager scopes secrets per user. Protected secrets drop that assumption by
 encrypting the value at rest, unlockable with a passphrase, Windows Hello, a
 FIDO2 security key, or a keyfile on a thumbdrive
 (`protected_secrets.md`). Proxy and service mode narrow who ever sees a
-plaintext value at runtime (`proxy.md`, `service_mode.md`).
+plaintext value at runtime (`proxy.md`, `service_mode.md`). The cloud tier
+moves the proxy into a Cloudflare Worker you deploy into your own account,
+so *no* client machine holds the provider key at all (`cloud.md`).
 
-## Non-Goals
+## Non-Goals of the Local Tool
+
+The first four layers are deliberately local:
 
 - No enterprise vault.
-- No cloud sync.
+- No cloud sync of vault contents.
 - No team workspaces.
 - No web dashboard.
 - No promise that a local administrator cannot extract an *unlocked* secret.
 - No protection for a session that is already unlocked.
 - No permanent `.env` generation for agent workflows.
+
+The **cloud tier** is the explicit, opt-in exception, and it trades away
+parts of the local story to get multi-machine reach — knowingly:
+
+- It requires a Cloudflare account and a network; nothing else here does.
+- Provider keys live as worker secrets in Cloudflare's infrastructure, not
+  in your Windows vault (keep the originals locally).
+- The machine token is a live, scoped credential in the agent's environment,
+  where the local proxy's placeholder was inert.
+- It has a minimal web dashboard (the grant matrix) and machine-level
+  sharing — still no per-user identity, audit trail, or enterprise features.
+
+If you never run `shush cloud deploy`, none of that applies and shush stays
+fully local. `cloud.md` states the full trust model.
 
 ## API-Key Names
 
@@ -82,6 +101,8 @@ Storage and use:
 - `run`: launch a command with selected secrets in its child-process
   environment.
 - `proxy start`: serve providers on localhost, injecting the key upstream.
+- `cloud ...`: deploy and manage the Cloudflare Worker tier; `run --cloud`
+  routes an agent through it with only a machine token on this machine.
 
 Protection at rest:
 

@@ -26,6 +26,7 @@ Each layer is independent and opt-in. Start at the top; add what you need.
 | **Protected secrets** | `enroll` + `protect` | Someone else on a shared or public machine reading your vault |
 | **Proxy mode** | `proxy start` | The tool or AI agent ever holding the key |
 | **Service mode** | `install_proxy_service.ps1` | Anything running as *you* reading a value back |
+| **Cloud proxy** | `cloud deploy` | Any of your machines — or a teammate — ever holding the key |
 
 Nothing here defends a session that is already unlocked, or a machine whose
 administrator is hostile. `docs/security_model.md` is specific about the edges.
@@ -83,6 +84,8 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 | `delete <name> [--if-exists]` | Remove a secret (`--if-exists` = idempotent) |
 | `run <cmd> [args...] --env ENV_VAR=secret_name` | Launch a command with secrets injected |
 | `proxy start [--port 8765] [--config proxy.json]` | Localhost proxy that injects keys upstream — clients never see them |
+| `cloud deploy` / `cloud machine add <label>` / … | Self-deployed Cloudflare Worker tier: keys as worker secrets, machines get revocable tokens (`docs/cloud.md`) |
+| `run --cloud <cmd> --env ENV_VAR=provider` | Launch a tool through the cloud worker — no key on this machine at all |
 | `enroll --passphrase\|--hello\|--yubikey\|--keyfile` | Add an unlock factor for protected secrets |
 | `protect <name>` / `unprotect <name>` | Encrypt one secret at rest, or undo it |
 | `slots [--slot <id>]` | List enrolled unlock factors, or remove one |
@@ -101,25 +104,32 @@ shush is not trying to be Doppler. It occupies a narrow niche: **a solo
 developer on Windows who wants tools and AI agents to use API keys without
 ever holding them — offline, no account, nothing installed.**
 
-| | shush | 1Password CLI | Doppler | Infisical | dotenvx | gopass |
-|---|:--:|:--:|:--:|:--:|:--:|:--:|
-| Offline, no account | ✅ | ➖ | ❌ | ➖ | ✅ | ✅ |
-| Cost | free | ~$3/mo+ | free ≤3 users | free ≤5 / self-host | free | free |
-| Cross-platform | ❌ Windows | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Env injection (`run`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Key never reaches the tool** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Hardware unlock | ✅ FIDO2 + Hello | ➖ biometric | ❌ | ❌ | ❌ | ➖ smartcard |
-| Team sharing, audit, rotation | ❌ | ✅ | ✅ | ✅ | ➖ | ➖ |
-| Audited crypto | ❌ | ✅ | ✅ | ✅ | ➖ | ✅ |
+| | shush | 1Password CLI | Doppler | Infisical | dotenvx | gopass | CF AI Gateway | LiteLLM |
+|---|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|
+| Offline, no account | ✅ | ➖ | ❌ | ➖ | ✅ | ✅ | ❌ | ➖ self-host |
+| Cost | free | ~$3/mo+ | free ≤3 users | free ≤5 / self-host | free | free | free | free |
+| Cross-platform | ❌ Windows | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ cloud | ✅ |
+| Env injection (`run`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ |
+| **Key never reaches the tool** | ✅ | ❌ | ❌ | ➖ Agent Proxy | ❌ | ❌ | ✅ LLM-only | ✅ LLM-only |
+| Non-LLM providers proxied | ✅ | — | — | ✅ | — | — | ❌ | ❌ |
+| Hardware unlock | ✅ FIDO2 + Hello | ➖ biometric | ❌ | ❌ | ❌ | ➖ smartcard | ❌ | ❌ |
+| Team sharing, audit, rotation | ➖ machines | ✅ | ✅ | ✅ | ➖ | ➖ | ➖ | ✅ |
+| Audited crypto | ❌ | ✅ | ✅ | ✅ | ➖ | ✅ | — | — |
 
-Three things here are genuinely uncommon. The **proxy** — nothing else in this
-list keeps the key out of the client's hands; the nearest equivalent is
-[LiteLLM's virtual keys](https://docs.litellm.ai/docs/proxy/virtual_keys), a
-Python/Docker server for teams and LLM traffic only. **Hardware-unlocked local
-storage** — 1Password offers Windows Hello, but as biometric unlock of a cloud
-account; a YubiKey touch decrypting a purely local vault with no account behind
-it is close to unique. And **service mode**, which has no equivalent at all:
-secrets held by a Windows account you cannot read from your own session.
+Keyless proxying is no longer unique to shush: [Cloudflare AI Gateway's
+BYOK](https://developers.cloudflare.com/ai-gateway/) does it free for catalog
+LLM providers, [Infisical's Agent Proxy](https://infisical.com/) does it
+self-hosted with a team story, and [LiteLLM's virtual
+keys](https://docs.litellm.ai/docs/proxy/virtual_keys) do it for LLM traffic
+through a Python/Docker server. If one of those fits your shape exactly, use
+it — `docs/cloud.md` says so too. What stays uncommon here:
+**arbitrary non-LLM HTTP providers** behind the same keyless proxy (local or
+[cloud](docs/cloud.md), with per-machine grants and nothing to host);
+**hardware-unlocked local storage** — 1Password offers Windows Hello, but as
+biometric unlock of a cloud account; a YubiKey touch decrypting a purely
+local vault with no account behind it is close to unique; and **service
+mode**, which has no equivalent at all: secrets held by a Windows account you
+cannot read from your own session.
 
 For context on the niche: [envchain](https://github.com/sorah/envchain), the
 tool this category descends from, doesn't run on Windows, and gopass's exec
@@ -210,6 +220,31 @@ Invoke-RestMethod http://127.0.0.1:8765/openai/v1/models   # no key on the clien
 ```
 
 Secret names are lowercase snake_case: `openai_api_key`, `github_token`.
+
+## Cloud proxy: no machine holds the key
+
+The proxy's promise, extended past one machine. `shush cloud deploy` puts the
+same credential-injecting proxy into a **Cloudflare Worker in your own
+account** (via wrangler; the free plan is typically enough). Provider keys
+live as write-only worker secrets; your laptop, desktop, CI, and teammates
+each get a revocable **machine token**, and a per-machine × per-provider
+grant matrix — with a small web UI — decides who may use which key.
+
+```powershell
+npx wrangler login                                # once, in cloud\worker
+shush cloud deploy
+shush cloud secret set openai_api_key             # key -> worker secret, never local again
+shush cloud machine add laptop --grant openai --save
+shush run --cloud codex --env OPENAI_API_KEY=openai
+shush cloud open                                  # grant matrix in the browser
+```
+
+Revocation is immediate, rotation has a 5-minute grace, and machines can
+carry daily quotas. Honest limits: the machine token is a live (scoped)
+credential, Cloudflare hosts your keys and traffic, WebSocket/gRPC clients
+and subscription-auth agents (ChatGPT-login codex, OAuth Claude Code) are
+not supported, and v1 is single-admin. Full trust model, setup, and
+offboarding: `docs/cloud.md`.
 
 ## Using shush with AI agents
 
@@ -338,6 +373,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\e2e_secret_manag
 # Proxy end-to-end (offline: throwaway secret + local echo upstream)
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\e2e_proxy.ps1
 
+# Cloud tier: worker unit tests (needs Node.js), then the offline e2e
+# (wrangler dev + echo upstream; skips with a message when Node is absent)
+cd cloud\worker; npm install --legacy-peer-deps; npm test; cd ..\..
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\e2e_cloud.ps1
+
 # Admin-pipe end-to-end (service-mode plumbing, simulated same-user)
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\e2e_admin_pipe.ps1
 
@@ -367,6 +407,8 @@ relying on either as your only unlock factor.
 - `docs/security_model.md` — what this does and does not protect against
 - `docs/protected_secrets.md` — encryption at rest and the four unlock factors
 - `docs/proxy.md` — proxy mode: routing, config, controls
+- `docs/cloud.md` — cloud tier: the self-deployed Cloudflare Worker proxy
 - `docs/service_mode.md` — service mode: the same-user protection boundary
 - `AGENTS.md` — setup and conventions for AI coding agents
 - `.agents/skills/createProxy/SKILL.md` — guided proxy setup for one vault secret
+- `.agents/skills/createCloudProxy/SKILL.md` — guided cloud-tier deployment

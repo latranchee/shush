@@ -97,6 +97,31 @@ Reference: `docs/proxy.md`. For the full guided
 workflow (pick a vault secret, configure, start, verify) follow
 `.agents/skills/createProxy/SKILL.md`.
 
+## Cloud tier (no machine holds the key)
+
+If `cloud_config.json` exists next to `secret_manager.ps1`, this machine can
+reach a self-deployed Cloudflare Worker that injects provider keys upstream:
+
+```powershell
+.\secret_manager.ps1 run --cloud codex --env OPENAI_API_KEY=openai   # ENV_VAR=provider, not secret_name
+.\secret_manager.ps1 list --cloud
+.\secret_manager.ps1 cloud status
+```
+
+What this means for you as an agent:
+
+- In cloud mode the env var you receive is a **machine token**
+  (`shm.<id>.<secret>`), a live scoped credential. Treat it like a secret:
+  never print or log it.
+- Provider keys are worker secrets on Cloudflare; there is no way to read
+  one from here, and `wrangler secret list` shows names only. Do not try.
+- The control plane is `shush cloud ...` (deploy/status/secret/machine/
+  backup/restore/env/open/admin-token). Deploying needs `npx wrangler login`
+  by the USER — never ask for their Cloudflare API token.
+- Guided setup: `.agents/skills/createCloudProxy/SKILL.md`. Reference:
+  `docs/cloud.md` (includes client caveats: subscription-auth agents bypass
+  the worker; WebSocket/gRPC are unsupported).
+
 ## Service mode (secrets you cannot read)
 
 If `service_config.json` exists next to `secret_manager.ps1`, the machine
@@ -173,6 +198,9 @@ modules/
   factor_fido2.psm1       # FIDO2 unlock factor (CTAP2 hmac-secret)
   fido2_native.psm1       # CTAP2-over-USB-HID transport + CBOR (C# interop)
   factor_keyfile.psm1     # keyfile (thumbdrive) unlock factor
+  cloud_client.psm1       # cloud tier: tokenizer, wrangler wrapper, API client
+cloud/worker/             # Cloudflare Worker (TypeScript): proxy, AclDO,
+                          # admin API/UI, vitest suite (npm test)
 tests/
   credential_store.Tests.ps1   # Pester unit tests
   process_runner.Tests.ps1     # Pester unit tests
@@ -186,7 +214,10 @@ tests/
   e2e_admin_pipe.ps1           # service-mode pipe round-trip (same-user sim)
   e2e_protected_secrets.ps1    # protect/unprotect round-trip, throwaway slot file
   e2e_hardware_factors.ps1     # INTERACTIVE: Hello + FIDO2 (skips if absent)
+  cloud_client.Tests.ps1       # Pester unit tests (cloud CLI plumbing)
+  e2e_cloud.ps1                # cloud worker via wrangler dev (skips w/o Node)
   fixtures/                    # child-process + echo-server fixtures
+                               # + cloud_vectors.json shared with the vitest suite
 docs/                     # overview, architecture, commands, security, proxy,
                           # service mode, protected secrets
 .agents/skills/           # agent skills (createProxy)
@@ -232,6 +263,14 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\e2e_protected_se
 # Hardware factors — INTERACTIVE, asks for a Hello gesture and key touches.
 # Skips (does not fail) whichever hardware is absent, so it is safe to run.
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\e2e_hardware_factors.ps1
+
+# Cloud tier — worker unit tests (Node.js required; --legacy-peer-deps works
+# around an npm 10 peer-resolution bug with vitest 4):
+cd cloud\worker; npm install --no-audit --no-fund --legacy-peer-deps; npm test
+
+# Cloud e2e — boots the worker locally via wrangler dev against a loopback
+# echo upstream; offline, no Cloudflare account; skips when Node is absent.
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\e2e_cloud.ps1
 ```
 
 Run both e2e scripts after any change to `secret_manager.ps1` or `modules/`.
