@@ -150,3 +150,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\e2e_proxy.ps1
 ```
 
 Guided setup for one real secret: `.agents/skills/createProxy/SKILL.md`.
+Adding a custom provider (any HTTP API): `.agents/skills/addProvider/SKILL.md`.

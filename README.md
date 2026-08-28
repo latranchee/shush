@@ -412,3 +412,4 @@ relying on either as your only unlock factor.
 - `AGENTS.md` — setup and conventions for AI coding agents
 - `.agents/skills/createProxy/SKILL.md` — guided proxy setup for one vault secret
 - `.agents/skills/createCloudProxy/SKILL.md` — guided cloud-tier deployment
+- `.agents/skills/addProvider/SKILL.md` — put any HTTP API behind the proxy (local or cloud)

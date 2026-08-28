@@ -174,6 +174,9 @@ Invoke-RestMethod -Method Put "$worker/api/providers" -Headers $headers -Body $b
 shush cloud secret set quo_api_key
 ```
 
+Guided version of this recipe (either tier):
+`.agents/skills/addProvider/SKILL.md`.
+
 Provider names in the cloud tier use the **secret-name grammar**
 (`^[a-z][a-z0-9_]*$`, no hyphens) so the `SK_<NAME_UPPER>` worker-secret
 mapping stays bijective. A corrupted or invalid overlay never takes the

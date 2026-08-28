@@ -118,9 +118,11 @@ What this means for you as an agent:
 - The control plane is `shush cloud ...` (deploy/status/secret/machine/
   backup/restore/env/open/admin-token). Deploying needs `npx wrangler login`
   by the USER — never ask for their Cloudflare API token.
-- Guided setup: `.agents/skills/createCloudProxy/SKILL.md`. Reference:
-  `docs/cloud.md` (includes client caveats: subscription-auth agents bypass
-  the worker; WebSocket/gRPC are unsupported).
+- Guided setup: `.agents/skills/createCloudProxy/SKILL.md`. Adding a custom
+  provider (any HTTP API, local or cloud):
+  `.agents/skills/addProvider/SKILL.md`. Reference: `docs/cloud.md`
+  (includes client caveats: subscription-auth agents bypass the worker;
+  WebSocket/gRPC are unsupported).
 
 ## Service mode (secrets you cannot read)
 
@@ -220,7 +222,7 @@ tests/
                                # + cloud_vectors.json shared with the vitest suite
 docs/                     # overview, architecture, commands, security, proxy,
                           # service mode, protected secrets
-.agents/skills/           # agent skills (createProxy)
+.agents/skills/           # agent skills (createProxy, createCloudProxy, addProvider, ...)
 ```
 
 ## Storage details
