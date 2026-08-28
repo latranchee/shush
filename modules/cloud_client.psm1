@@ -245,7 +245,22 @@ function invoke_wrangler {
     $process = [System.Diagnostics.Process]::new()
     $process.StartInfo = $psi
     try {
-        [void]$process.Start()
+        # .NET Framework creates the stdin StreamWriter eagerly inside
+        # Start() using Console.InputEncoding, and a with-BOM encoding there
+        # (chcp 65001 consoles) prepends EF BB BF to everything we pipe -
+        # which would corrupt a secret fed to `wrangler secret put`. Pin a
+        # BOM-less UTF-8 around Start() (same trick as
+        # read_secret_from_stdin) and restore afterwards.
+        $previousInputEncoding = $null
+        try { $previousInputEncoding = [Console]::InputEncoding } catch { }
+        try { [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false) } catch { }
+        try {
+            [void]$process.Start()
+        } finally {
+            if ($null -ne $previousInputEncoding) {
+                try { [Console]::InputEncoding = $previousInputEncoding } catch { }
+            }
+        }
 
         if ($null -ne $StdinText) {
             # Raw UTF-8 bytes on the base stream: the StreamWriter wrapper
@@ -288,7 +303,10 @@ function invoke_wrangler {
 }
 
 # Get-or-create by title: `wrangler kv namespace create` is not idempotent
-# (a second run errors), so list first and only create on a miss.
+# (a second run errors), so list first and only create on a miss. The id of a
+# fresh namespace comes from the CREATE output itself - the list API is
+# eventually consistent and may not show a just-created namespace for a
+# while - with a retried list as the fallback.
 function get_or_create_kv_namespace {
     param([string]$WorkerDir, [string]$WorkerName = 'shush-cloud', [string]$Binding = 'SHUSH_KV')
 
@@ -301,10 +319,27 @@ function get_or_create_kv_namespace {
     $created = invoke_wrangler -WorkerDir $WorkerDir -Arguments @('kv', 'namespace', 'create', $Binding)
     if (-not $created.success) { return $created }
 
-    $found = find_kv_namespace_id -WorkerDir $WorkerDir -Titles $titles
-    if (-not $found.success) { return $found }
-    if ($found.data) { return new_result -Data $found.data }
-    return new_error -Code 'KV_CREATE_FAILED' -Message 'KV namespace was created but could not be found in the namespace list'
+    $fromCreate = get_kv_id_from_create_output -Text ([string]$created.data.stdout + "`n" + [string]$created.data.stderr)
+    if ($fromCreate) { return new_result -Data $fromCreate }
+
+    foreach ($delaySeconds in @(0, 2, 5, 10)) {
+        if ($delaySeconds -gt 0) { Start-Sleep -Seconds $delaySeconds }
+        $found = find_kv_namespace_id -WorkerDir $WorkerDir -Titles $titles
+        if (-not $found.success) { return $found }
+        if ($found.data) { return new_result -Data $found.data }
+    }
+    return new_error -Code 'KV_CREATE_FAILED' -Message 'KV namespace was created but its id could not be determined (create output had no id and the list API has not caught up). Re-run `shush cloud deploy` in a minute.'
+}
+
+# `wrangler kv namespace create` prints the config snippet to add, e.g.
+#   { "kv_namespaces": [ { "binding": "SHUSH_KV", "id": "ca8d...0947" } ] }
+# Pull the 32-hex id straight out of it.
+function get_kv_id_from_create_output {
+    param([string]$Text)
+
+    if (-not $Text) { return $null }
+    if ($Text -match '"id"\s*:\s*"([0-9a-f]{32})"') { return $Matches[1] }
+    return $null
 }
 
 function find_kv_namespace_id {
@@ -313,12 +348,18 @@ function find_kv_namespace_id {
     $listed = invoke_wrangler -WorkerDir $WorkerDir -Arguments @('kv', 'namespace', 'list')
     if (-not $listed.success) { return $listed }
     try {
-        # wrangler may print banner lines before the JSON; take from the
-        # first '[' onward.
-        $raw = [string]$listed.data.stdout
+        # wrangler may print banner lines before the JSON; strip ANSI escape
+        # sequences first (wrangler colors output even under NO_COLOR/CI, and
+        # escape codes contain '[' characters), then take from the first '['
+        # onward.
+        $raw = ([string]$listed.data.stdout) -replace "$([char]27)\[[0-9;]*[A-Za-z]", ''
         $start = $raw.IndexOf('[')
         if ($start -lt 0) { return new_error -Code 'KV_LIST_FAILED' -Message 'kv namespace list returned no JSON array' }
-        $namespaces = @($raw.Substring($start) | ConvertFrom-Json)
+        # Re-enumerate explicitly: Windows PowerShell 5.1's ConvertFrom-Json
+        # emits a JSON array as ONE Object[] item (pwsh 7 enumerates it), so
+        # @(...) alone would wrap the whole array as a single element.
+        $parsed = $raw.Substring($start) | ConvertFrom-Json
+        $namespaces = @($parsed | ForEach-Object { $_ })
     } catch {
         return new_error -Code 'KV_LIST_FAILED' -Message "Cannot parse kv namespace list output: $($_.Exception.Message)"
     }
@@ -500,6 +541,7 @@ Export-ModuleMember -Function @(
     'find_npx_or_error',
     'invoke_wrangler',
     'get_or_create_kv_namespace',
+    'get_kv_id_from_create_output',
     'find_kv_namespace_id',
     'update_wrangler_kv_id',
     'invoke_cloud_api',

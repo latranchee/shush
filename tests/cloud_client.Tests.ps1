@@ -200,6 +200,45 @@ Describe 'cloud config round-trip' {
     }
 }
 
+Describe 'get_kv_id_from_create_output' {
+    It 'extracts the id from the wrangler create snippet' {
+        $out = @'
+Creating namespace with title "SHUSH_KV"
+Success!
+Add the following to your configuration file in your kv_namespaces array:
+{ "kv_namespaces": [ { "binding": "SHUSH_KV", "id": "ca8df347187e472882cf76b84bad0947" } ] }
+'@
+        get_kv_id_from_create_output -Text $out | Should -Be 'ca8df347187e472882cf76b84bad0947'
+    }
+
+    It 'returns null when no id is present' {
+        get_kv_id_from_create_output -Text 'Success, probably' | Should -BeNullOrEmpty
+        get_kv_id_from_create_output -Text '' | Should -BeNullOrEmpty
+    }
+
+    It 'ignores non-hex or wrong-length ids' {
+        get_kv_id_from_create_output -Text '"id": "not-a-real-id"' | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'find_kv_namespace_id output parsing' {
+    It 'survives ANSI escapes and banner noise before the JSON array' {
+        $esc = [char]27
+        $noisy = "$esc[33mWARNING$esc[0m unsafe fields blah`n[`n  { `"id`": `"abc123abc123abc123abc123abc123ab`", `"title`": `"SHUSH_KV`" }`n]"
+        Mock invoke_wrangler { @{ success = $true; data = @{ exit_code = 0; stdout = $noisy; stderr = '' }; error = $null } } -ModuleName 'cloud_client'
+        $result = find_kv_namespace_id -WorkerDir 'C:\anywhere' -Titles @('SHUSH_KV')
+        $result.success | Should -BeTrue
+        $result.data | Should -Be 'abc123abc123abc123abc123abc123ab'
+    }
+
+    It 'reports a miss as success with null data' {
+        Mock invoke_wrangler { @{ success = $true; data = @{ exit_code = 0; stdout = '[]'; stderr = '' }; error = $null } } -ModuleName 'cloud_client'
+        $result = find_kv_namespace_id -WorkerDir 'C:\anywhere' -Titles @('SHUSH_KV')
+        $result.success | Should -BeTrue
+        $result.data | Should -BeNullOrEmpty
+    }
+}
+
 Describe 'wrangler.jsonc kv id round-trip' {
     It 'updates the namespace id and preserves the rest' {
         $source = Join-Path $PSScriptRoot '..\cloud\worker\wrangler.jsonc'
