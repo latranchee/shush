@@ -29,6 +29,11 @@ param(
 
     [switch]$local,
 
+    # Cloud tier: `run --cloud` / `list --cloud` route through the deployed
+    # Cloudflare Worker instead of the local vault. The control plane is the
+    # `cloud` command family, which parses its own arguments.
+    [switch]$cloud,
+
     [Alias('admin-pipe')]
     [string]$admin_pipe,
 
@@ -65,12 +70,26 @@ Set-StrictMode -Version Latest
 # ValueFromRemainingArguments bucket — promote them back into the
 # corresponding params here so `--force`/`--from-stdin`/etc. work the
 # same as their single-dash forms.
-if ($null -ne $arguments) {
+# The `cloud` family owns its argument parsing entirely (see
+# invoke_cloud_command): its tokens are handed over verbatim so a cloud flag
+# can never collide with a top-level one. For `run`, only run's own flags are
+# promoted; anything else after the command token belongs to the CHILD
+# process (a position-blind sweep would eat flags like the child's --port).
+$promotionScope = 'all'
+if ($command -eq 'cloud') { $promotionScope = 'none' }
+elseif ($command -eq 'run') { $promotionScope = 'run' }
+
+if ($null -ne $arguments -and $promotionScope -ne 'none') {
     $tail = @()
     $rest = @($arguments)
     $i = 0
     while ($i -lt $rest.Count) {
         $tok = $rest[$i]
+        if ($promotionScope -eq 'run' -and $tok -cnotmatch '^--(env|env-optional|local|cloud)$') {
+            $tail += $tok
+            $i += 1
+            continue
+        }
         $consumed = $true
         switch -CaseSensitive -Regex ($tok) {
             '^--from-stdin$' { $from_stdin = $true }
@@ -107,6 +126,7 @@ if ($null -ne $arguments) {
                 } else { $consumed = $false; $tail += $tok }
             }
             '^--local$' { $local = $true }
+            '^--cloud$' { $cloud = $true }
             '^--passphrase$' { $passphrase = $true }
             '^--passphrase-stdin$' { $passphrase_stdin = $true }
             '^--hello$' { $hello = $true }
@@ -163,6 +183,7 @@ Import-Module (Join-Path $moduleDir 'admin_pipe.psm1') -Force
 Import-Module (Join-Path $moduleDir 'proxy_server.psm1') -Force
 Import-Module (Join-Path $moduleDir 'vault_crypto.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $moduleDir 'vault_keyslots.psm1') -Force -DisableNameChecking
+Import-Module (Join-Path $moduleDir 'cloud_client.psm1') -Force
 
 # Service mode: when service_config.json exists (written by
 # install_proxy_service.ps1), secrets live in the service account's vault
@@ -183,6 +204,18 @@ function use_service_pipe {
     return ($null -ne $script:serviceConfig) -and (-not $local)
 }
 
+# Mode matrix: --cloud overrides service mode for run/list; it never combines
+# with --local; the cloud control plane has its own command family and no
+# other command accepts the flag.
+if ($cloud -and $local) {
+    Write-Host 'ERROR: --local and --cloud are mutually exclusive.' -ForegroundColor Red
+    exit 1
+}
+if ($cloud -and $command -and ($command.ToLowerInvariant() -notin @('run', 'list'))) {
+    Write-Host "ERROR: --cloud applies to 'run' and 'list' only. The cloud control plane is: shush cloud <subcommand>" -ForegroundColor Red
+    exit 1
+}
+
 function get_service_pipe_name {
     return [string]$script:serviceConfig.pipe_name
 }
@@ -196,6 +229,9 @@ function show_usage {
     Write-Host "  .\secret_manager.ps1 delete <name> [--if-exists]"
     Write-Host "  .\secret_manager.ps1 run <command> [args...] --env ENV_VAR=secret_name [--env-optional ENV_VAR=secret_name]"
     Write-Host "  .\secret_manager.ps1 proxy start [--port 8765] [--config proxy.json]"
+    Write-Host "  .\secret_manager.ps1 cloud <deploy|status|secret|machine|backup|restore|env|open|admin-token> [...]"
+    Write-Host "  .\secret_manager.ps1 run --cloud <command> [args...] --env ENV_VAR=provider"
+    Write-Host "  .\secret_manager.ps1 list --cloud"
     Write-Host "  .\secret_manager.ps1 enroll --passphrase|--hello|--yubikey|--keyfile [<path>] [--label <text>]"
     Write-Host "  .\secret_manager.ps1 protect <name>"
     Write-Host "  .\secret_manager.ps1 unprotect <name>"
@@ -233,6 +269,13 @@ function show_usage {
     Write-Host "                  Built-in providers: openai, anthropic, gemini."
     Write-Host "                  Optional proxy.json (next to this script) adds/overrides"
     Write-Host "                  providers; see docs/proxy.md."
+    Write-Host "  cloud           self-deployed Cloudflare Worker tier: provider keys live"
+    Write-Host "                  as worker secrets and are injected upstream, so no client"
+    Write-Host "                  machine ever holds them. 'cloud' with no subcommand lists"
+    Write-Host "                  the family; see docs/cloud.md."
+    Write-Host "  --cloud         with run/list: route through the deployed worker using the"
+    Write-Host "                  machine token from the vault. Mappings become"
+    Write-Host "                  ENV_VAR=provider (not ENV_VAR=secret_name)."
 }
 
 function read_secret_from_secure_prompt {
@@ -849,6 +892,21 @@ function invoke_create_command {
 }
 
 function invoke_list_command {
+    if ($cloud) {
+        # Cloud names come from the worker's provider table; a provider whose
+        # worker secret is missing is flagged the way local list flags
+        # [protected].
+        $status = invoke_cloud_api_or_exit -Method 'GET' -Path '/api/status'
+        foreach ($provider in @($status.providers)) {
+            if ([bool]$provider.secret_available) {
+                Write-Host $provider.name
+            } else {
+                Write-Host "$($provider.name)  [no key]"
+            }
+        }
+        return
+    }
+
     $result = if (use_service_pipe) {
         send_admin_request -PipeName (get_service_pipe_name) -Request @{ op = 'list' }
     } else {
@@ -951,6 +1009,11 @@ function invoke_run_command {
         exit 1
     }
 
+    if ($cloud) {
+        invoke_cloud_run
+        return
+    }
+
     # expand_env_mappings splits comma-joined tokens: a raw command line
     # (NSSM AppParameters, powershell -File) has no array syntax, so
     # `-secret_env "A=a","B=b"` arrives here as the single token "A=a,B=b".
@@ -984,6 +1047,63 @@ function invoke_run_command {
     }
 
     $result = invoke_secret_process -FilePath $name -ArgumentList @($arguments) -Environment $resolved.data -WorkingDirectory (Get-Location).Path
+    if (-not $result.success -and $result.error -and $result.error.code -eq 'PROCESS_START_FAILED') {
+        Write-Host "ERROR: $($result.error.message)" -ForegroundColor Red
+    }
+    exit ([int]$result.data.exit_code)
+}
+
+# Cloud-mode run: --env ENV_VAR=provider maps a client env var to a GRANTED
+# PROVIDER on the worker, not to a vault secret. The child gets the machine
+# token as its API key plus the client-correct base-URL variable(s); no
+# provider key ever exists on this machine.
+function invoke_cloud_run {
+    $mappings = @(expand_env_mappings -Tokens $secret_env)
+    $optionalMappings = @(expand_env_mappings -Tokens $secret_env_optional)
+    if ($optionalMappings.Count -gt 0) {
+        Write-Host 'ERROR: --env-optional does not apply with --cloud: mappings name worker providers, and grant checks happen on the worker.' -ForegroundColor Red
+        exit 1
+    }
+    if ($mappings.Count -eq 0) {
+        Write-Host 'ERROR: At least one --env ENV_VAR=provider mapping is required with --cloud' -ForegroundColor Red
+        exit 1
+    }
+
+    $config = read_cloud_config_or_exit
+    $token = get_cloud_machine_token_or_exit
+
+    $envValues = @{}
+    $providers = @()
+    $seenEnvCi = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($mapping in $mappings) {
+        # Provider names share the secret-name grammar, so the same parser
+        # validates ENV_VAR=provider.
+        $parsed = parse_secret_env_mapping -Mapping $mapping
+        if (-not $parsed.success) {
+            Write-Host "ERROR: $($parsed.error.message)" -ForegroundColor Red
+            exit 1
+        }
+        if (-not $seenEnvCi.Add($parsed.data.env_var)) {
+            Write-Host "ERROR: Duplicate env var '$($parsed.data.env_var)' (case-insensitive on Windows)" -ForegroundColor Red
+            exit 1
+        }
+        $providers += $parsed.data.secret_name
+        $plan = get_cloud_env_mappings -EnvVar $parsed.data.env_var -Provider $parsed.data.secret_name -WorkerUrl $config.worker_url -Token $token
+        if (-not $plan.success) {
+            Write-Host "ERROR: $($plan.error.message)" -ForegroundColor Red
+            exit 1
+        }
+        foreach ($key in $plan.data.values.Keys) { $envValues[$key] = $plan.data.values[$key] }
+        foreach ($note in @($plan.data.notes)) {
+            [Console]::Error.WriteLine("NOTE: $note")
+        }
+    }
+
+    foreach ($warning in @(get_cloud_preflight_warnings -ChildCommand $name -Providers $providers)) {
+        [Console]::Error.WriteLine("WARNING: $warning")
+    }
+
+    $result = invoke_secret_process -FilePath $name -ArgumentList @($arguments) -Environment $envValues -WorkingDirectory (Get-Location).Path
     if (-not $result.success -and $result.error -and $result.error.code -eq 'PROCESS_START_FAILED') {
         Write-Host "ERROR: $($result.error.message)" -ForegroundColor Red
     }
@@ -1066,6 +1186,498 @@ function invoke_proxy_command {
     }
 }
 
+# ---------------------------------------------------------------------------
+# Cloud tier (`shush cloud ...`)
+#
+# Control plane for the self-deployed Cloudflare Worker (cloud/worker/).
+# Never touches the service pipe: cloud state lives in the worker, and the
+# admin/machine tokens live in the LOCAL vault (shush_cloud_admin_token,
+# shush_cloud_token), protected-secret support included.
+# ---------------------------------------------------------------------------
+
+$script:cloudVaultAdminToken = 'shush_cloud_admin_token'
+$script:cloudVaultMachineToken = 'shush_cloud_token'
+
+function get_cloud_worker_dir {
+    return (Join-Path $scriptDir 'cloud\worker')
+}
+
+function read_cloud_config_or_exit {
+    $result = read_cloud_config -Path (get_cloud_config_path -ScriptDir $scriptDir)
+    if (-not $result.success) {
+        Write-Host "ERROR: $($result.error.message)" -ForegroundColor Red
+        exit 1
+    }
+    return $result.data
+}
+
+function get_cloud_admin_token_or_exit {
+    $stored = read_secret_plaintext -SecretName $script:cloudVaultAdminToken
+    if (-not $stored.success) {
+        Write-Host "ERROR: No cloud admin token in the vault ($script:cloudVaultAdminToken)." -ForegroundColor Red
+        Write-Host '       Run `shush cloud deploy` on the machine that owns the worker, or store the token with:' -ForegroundColor Yellow
+        Write-Host "       shush set $script:cloudVaultAdminToken" -ForegroundColor Yellow
+        exit 1
+    }
+    return $stored.data
+}
+
+function get_cloud_machine_token_or_exit {
+    $stored = read_secret_plaintext -SecretName $script:cloudVaultMachineToken
+    if (-not $stored.success) {
+        Write-Host "ERROR: No cloud machine token in the vault ($script:cloudVaultMachineToken)." -ForegroundColor Red
+        Write-Host '       On the admin machine run `shush cloud machine add <label>`, then store the printed token here:' -ForegroundColor Yellow
+        Write-Host "       shush set $script:cloudVaultMachineToken" -ForegroundColor Yellow
+        exit 1
+    }
+    $parsed = parse_machine_token -Token $stored.data
+    if (-not $parsed.success) {
+        Write-Host "ERROR: The stored $script:cloudVaultMachineToken is not a valid machine token: $($parsed.error.message)" -ForegroundColor Red
+        exit 1
+    }
+    return $stored.data
+}
+
+function invoke_cloud_api_or_exit {
+    param([string]$Method, [string]$Path, $Body = $null)
+
+    $config = read_cloud_config_or_exit
+    $adminToken = get_cloud_admin_token_or_exit
+    $result = invoke_cloud_api -WorkerUrl $config.worker_url -Method $Method -Path $Path -Body $Body -AdminToken $adminToken
+    if (-not $result.success) {
+        Write-Host "ERROR: $($result.error.message)" -ForegroundColor Red
+        exit 1
+    }
+    return $result.data
+}
+
+function store_cloud_vault_token {
+    param([string]$SecretName, [string]$Value)
+
+    $write = set_secret_value -Name $SecretName -Value $Value -Force
+    if (-not $write.success) {
+        Write-Host "WARNING: could not store $SecretName in the vault: $($write.error.message)" -ForegroundColor Yellow
+        return $false
+    }
+    return $true
+}
+
+function invoke_cloud_deploy {
+    param($Flags)
+
+    $workerDir = get_cloud_worker_dir
+    if (-not (Test-Path (Join-Path $workerDir 'wrangler.jsonc'))) {
+        Write-Host "ERROR: Worker source not found at $workerDir" -ForegroundColor Red
+        exit 1
+    }
+    $npx = find_npx_or_error
+    if (-not $npx.success) {
+        Write-Host "ERROR: $($npx.error.message)" -ForegroundColor Red
+        exit 1
+    }
+
+    Write-Host 'shush cloud deploy'
+    Write-Host '  [1/5] KV namespace (get-or-create)...'
+    $namespace = get_or_create_kv_namespace -WorkerDir $workerDir
+    if (-not $namespace.success) {
+        Write-Host "ERROR: $($namespace.error.message)" -ForegroundColor Red
+        Write-Host '       If you are not logged in yet, run: npx wrangler login' -ForegroundColor Yellow
+        exit 1
+    }
+    $updated = update_wrangler_kv_id -Path (Join-Path $workerDir 'wrangler.jsonc') -NamespaceId $namespace.data
+    if (-not $updated.success) {
+        Write-Host "ERROR: $($updated.error.message)" -ForegroundColor Red
+        exit 1
+    }
+
+    Write-Host '  [2/5] Admin token...'
+    $adminToken = $null
+    if (-not $Flags.reset_admin) {
+        $existing = get_secret_value -Name $script:cloudVaultAdminToken
+        if ($existing.success) {
+            $adminToken = if (test_protected_value -Value $existing.data) {
+                (read_secret_plaintext -SecretName $script:cloudVaultAdminToken).data
+            } else { $existing.data }
+            Write-Host '        Reusing the admin token already in the vault (use --reset-admin to mint a new one).'
+        }
+    }
+    $mintedAdmin = $false
+    if (-not $adminToken) {
+        $adminToken = new_cloud_admin_token
+        $mintedAdmin = $true
+    }
+    $adminHash = get_admin_token_hash -Token $adminToken
+
+    Write-Host '  [3/5] wrangler deploy...'
+    $deployed = invoke_wrangler -WorkerDir $workerDir -Arguments @('deploy')
+    if (-not $deployed.success) {
+        Write-Host "ERROR: $($deployed.error.message)" -ForegroundColor Red
+        exit 1
+    }
+    $deployText = [string]$deployed.data.stdout + "`n" + [string]$deployed.data.stderr
+    $workerUrl = $null
+    if ($deployText -match 'https://[a-z0-9][a-z0-9.-]*\.workers\.dev') {
+        $workerUrl = $Matches[0]
+    }
+    if (-not $workerUrl) {
+        Write-Host 'ERROR: Deploy succeeded but no *.workers.dev URL was found in the output.' -ForegroundColor Red
+        Write-Host '       Set it manually in cloud_config.json as {"worker_url": "https://..."}' -ForegroundColor Yellow
+        exit 1
+    }
+
+    # The worker is live but fail-closed (503) until this lands.
+    Write-Host '  [4/5] Setting ADMIN_TOKEN_HASH (activates the worker)...'
+    $secretPut = invoke_wrangler -WorkerDir $workerDir -Arguments @('secret', 'put', 'ADMIN_TOKEN_HASH') -StdinText $adminHash
+    if (-not $secretPut.success) {
+        Write-Host "ERROR: $($secretPut.error.message)" -ForegroundColor Red
+        exit 1
+    }
+
+    Write-Host '  [5/5] Saving local state...'
+    if ($mintedAdmin) {
+        [void](store_cloud_vault_token -SecretName $script:cloudVaultAdminToken -Value $adminToken)
+    }
+    $configWrite = write_cloud_config -Path (get_cloud_config_path -ScriptDir $scriptDir) -Config @{ worker_url = $workerUrl }
+    if (-not $configWrite.success) {
+        Write-Host "ERROR: $($configWrite.error.message)" -ForegroundColor Red
+        exit 1
+    }
+
+    Write-Host ''
+    Write-Host "Deployed: $workerUrl" -ForegroundColor Green
+    Write-Host 'Next steps:'
+    Write-Host '  shush cloud secret set openai_api_key      # store a provider key as a worker secret'
+    Write-Host '  shush cloud machine add laptop --grant openai --save'
+    Write-Host '  shush cloud open                           # grant matrix in the browser'
+    Write-Host '  shush run --cloud codex --env OPENAI_API_KEY=openai'
+    Write-Host ''
+    Write-Host 'Recommended hardening: put Cloudflare Access (service tokens) in front of the worker.'
+    Write-Host 'See docs/cloud.md.'
+}
+
+function invoke_cloud_status {
+    param($Flags)
+
+    $config = read_cloud_config_or_exit
+    if ($Flags.probe) {
+        $probe = [System.Diagnostics.Stopwatch]::StartNew()
+        $root = invoke_cloud_api -WorkerUrl $config.worker_url -Method 'GET' -Path '/'
+        $probe.Stop()
+        if ($root.success) {
+            Write-Host "Probe: $($config.worker_url) is up ($($probe.ElapsedMilliseconds)ms)"
+        } else {
+            Write-Host "Probe: $($config.worker_url) FAILED: $($root.error.message)" -ForegroundColor Red
+        }
+    }
+    $status = invoke_cloud_api_or_exit -Method 'GET' -Path '/api/status'
+
+    Write-Host "Worker:  $($config.worker_url)"
+    Write-Host "Config:  v$($status.config_version) ($($status.config_source))"
+    if ([string]$status.config_source -eq 'kv_prev') {
+        Write-Host 'WARNING: serving the last-good provider config; the live one failed validation.' -ForegroundColor Yellow
+    }
+    Write-Host ''
+    Write-Host ("{0,-14} {1,-8} {2,-24} {3,-10} {4,8} {5,10}" -f 'MACHINE', 'ID', 'GRANTS', 'STATE', 'TODAY', 'TOTAL')
+    foreach ($machine in @($status.machines)) {
+        $state = if ([bool]$machine.disabled) { 'disabled' } else { 'active' }
+        $grants = (@($machine.grants) -join ',')
+        if (-not $grants) { $grants = '-' }
+        Write-Host ("{0,-14} {1,-8} {2,-24} {3,-10} {4,8} {5,10}" -f $machine.label, $machine.id, $grants, $state, $machine.today_count, $machine.total_count)
+    }
+    if (@($status.machines).Count -eq 0) {
+        Write-Host '  (no machines; add one with: shush cloud machine add <label>)'
+    }
+    Write-Host ''
+    Write-Host ("{0,-14} {1,-22} {2,-16} {3}" -f 'PROVIDER', 'SECRET', 'AUTH', 'KEY')
+    foreach ($provider in @($status.providers)) {
+        $keyState = if ([bool]$provider.secret_available) { 'set' } else { 'MISSING' }
+        Write-Host ("{0,-14} {1,-22} {2,-16} {3}" -f $provider.name, $provider.secret, $provider.auth, $keyState)
+    }
+}
+
+function invoke_cloud_secret {
+    param([string]$Action, [string]$SecretName, $Flags)
+
+    if ($Action -notin @('set', 'delete')) {
+        Write-Host "ERROR: Unknown cloud secret action '$Action'. Usage: shush cloud secret set|delete <name>" -ForegroundColor Red
+        exit 1
+    }
+    if (-not $SecretName) {
+        Write-Host 'ERROR: Missing secret name.' -ForegroundColor Red
+        exit 1
+    }
+    $binding = format_secret_binding_name -Name $SecretName
+    if (-not $binding) {
+        Write-Host "ERROR: Invalid secret name '$SecretName'. Use lowercase letters, digits, underscores; start with a lowercase letter." -ForegroundColor Red
+        exit 1
+    }
+    [void](read_cloud_config_or_exit)  # fail early with a clear message if never deployed
+    $workerDir = get_cloud_worker_dir
+
+    if ($Action -eq 'set') {
+        $value = if ($Flags.from_stdin) {
+            read_secret_from_stdin
+        } else {
+            read_secret_from_secure_prompt -Name $SecretName
+        }
+        if ([string]::IsNullOrEmpty($value)) {
+            Write-Host "ERROR: Secret value is empty. Refusing to store empty secret for '$SecretName'." -ForegroundColor Red
+            exit 1
+        }
+        $result = invoke_wrangler -WorkerDir $workerDir -Arguments @('secret', 'put', $binding) -StdinText $value
+        if (-not $result.success) {
+            Write-Host "ERROR: $($result.error.message)" -ForegroundColor Red
+            exit 1
+        }
+        Write-Host "Stored worker secret: $binding (provider secret '$SecretName')"
+        if ($SecretName -notin @('openai_api_key', 'anthropic_api_key', 'gemini_api_key')) {
+            Write-Host "Note: '$SecretName' is not referenced by a built-in provider; add a provider entry via PUT /api/providers (see docs/cloud.md)."
+        }
+        return
+    }
+
+    # wrangler asks for confirmation on delete; answer yes over stdin so the
+    # command works both interactively and in CI.
+    $result = invoke_wrangler -WorkerDir $workerDir -Arguments @('secret', 'delete', $binding) -StdinText "y`n"
+    if (-not $result.success) {
+        Write-Host "ERROR: $($result.error.message)" -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "Deleted worker secret: $binding"
+}
+
+function invoke_cloud_machine {
+    param([string]$Action, [string]$Target, $Flags)
+
+    switch ($Action) {
+        'add' {
+            if (-not $Target) {
+                Write-Host 'ERROR: Usage: shush cloud machine add <label> [--grant a,b] [--save]' -ForegroundColor Red
+                exit 1
+            }
+            $created = invoke_cloud_api_or_exit -Method 'POST' -Path '/api/machines' -Body @{ label = $Target; grants = @($Flags.grant) }
+            Write-Host "Machine added: $($created.machine.label) ($($created.machine.id))"
+            $grantList = @($created.machine.grants) -join ', '
+            if ($grantList) { Write-Host "Grants: $grantList" } else { Write-Host 'Grants: none yet (use: shush cloud machine grant <id> <providers>)' }
+            Write-Host ''
+            Write-Host 'Machine token (shown once, store it now):' -ForegroundColor Yellow
+            Write-Host "  $($created.token)"
+            if ($Flags.save) {
+                if (store_cloud_vault_token -SecretName $script:cloudVaultMachineToken -Value $created.token) {
+                    Write-Host "Stored in this machine's vault as $script:cloudVaultMachineToken."
+                }
+            } else {
+                Write-Host "On the target machine: shush create $script:cloudVaultMachineToken <token>  (or re-run add with --save for this machine)"
+            }
+        }
+        'list' {
+            $listed = invoke_cloud_api_or_exit -Method 'GET' -Path '/api/machines'
+            Write-Host ("{0,-14} {1,-14} {2,-24} {3,-10} {4}" -f 'LABEL', 'ID', 'GRANTS', 'STATE', 'LAST SEEN')
+            foreach ($machine in @($listed.machines)) {
+                $state = if ([bool]$machine.disabled) { 'disabled' } else { 'active' }
+                $grants = (@($machine.grants) -join ',')
+                if (-not $grants) { $grants = '-' }
+                $seen = if ($machine.last_seen -gt 0) { ([DateTimeOffset]::FromUnixTimeMilliseconds([int64]$machine.last_seen)).LocalDateTime.ToString('yyyy-MM-dd HH:mm') } else { 'never' }
+                Write-Host ("{0,-14} {1,-14} {2,-24} {3,-10} {4}" -f $machine.label, $machine.id, $grants, $state, $seen)
+            }
+            if (@($listed.machines).Count -eq 0) { Write-Host '  (none)' }
+        }
+        'revoke' {
+            if (-not $Target) { Write-Host 'ERROR: Usage: shush cloud machine revoke <id>' -ForegroundColor Red; exit 1 }
+            [void](invoke_cloud_api_or_exit -Method 'DELETE' -Path "/api/machines/$Target")
+            Write-Host "Revoked machine: $Target (its token stops working immediately)"
+        }
+        'rotate' {
+            if (-not $Target) { Write-Host 'ERROR: Usage: shush cloud machine rotate <id>' -ForegroundColor Red; exit 1 }
+            $rotated = invoke_cloud_api_or_exit -Method 'POST' -Path "/api/machines/$Target/rotate"
+            Write-Host "Rotated machine: $Target (old token dies in 5 minutes)"
+            Write-Host ''
+            Write-Host 'New machine token (shown once):' -ForegroundColor Yellow
+            Write-Host "  $($rotated.token)"
+        }
+        'disable' {
+            if (-not $Target) { Write-Host 'ERROR: Usage: shush cloud machine disable <id>' -ForegroundColor Red; exit 1 }
+            [void](invoke_cloud_api_or_exit -Method 'POST' -Path "/api/machines/$Target/disable")
+            Write-Host "Disabled machine: $Target"
+        }
+        'enable' {
+            if (-not $Target) { Write-Host 'ERROR: Usage: shush cloud machine enable <id>' -ForegroundColor Red; exit 1 }
+            [void](invoke_cloud_api_or_exit -Method 'POST' -Path "/api/machines/$Target/enable")
+            Write-Host "Enabled machine: $Target"
+        }
+        'grant' {
+            invoke_cloud_grant_change -Target $Target -Providers @($Flags.grant) -Remove:$false
+        }
+        'ungrant' {
+            invoke_cloud_grant_change -Target $Target -Providers @($Flags.grant) -Remove:$true
+        }
+        default {
+            Write-Host "ERROR: Unknown machine action '$Action'. Valid: add, list, revoke, rotate, grant, ungrant, disable, enable." -ForegroundColor Red
+            exit 1
+        }
+    }
+}
+
+function invoke_cloud_grant_change {
+    param([string]$Target, [string[]]$Providers, [switch]$Remove)
+
+    $verb = if ($Remove) { 'ungrant' } else { 'grant' }
+    if (-not $Target -or @($Providers).Count -eq 0) {
+        Write-Host "ERROR: Usage: shush cloud machine $verb <id> --grant <providers>" -ForegroundColor Red
+        exit 1
+    }
+    $listed = invoke_cloud_api_or_exit -Method 'GET' -Path '/api/machines'
+    $machine = @($listed.machines) | Where-Object { [string]$_.id -eq $Target } | Select-Object -First 1
+    if (-not $machine) {
+        Write-Host "ERROR: No machine with id '$Target'." -ForegroundColor Red
+        exit 1
+    }
+    $grants = @($machine.grants | ForEach-Object { [string]$_ })
+    if ($Remove) {
+        $grants = @($grants | Where-Object { $Providers -notcontains $_ })
+    } else {
+        $grants = @($grants + $Providers | Select-Object -Unique)
+    }
+    [void](invoke_cloud_api_or_exit -Method 'PUT' -Path "/api/machines/$Target/grants" -Body @{ grants = $grants })
+    $rendered = if (@($grants).Count -gt 0) { $grants -join ', ' } else { '(none)' }
+    Write-Host "Machine ${Target} grants: $rendered"
+}
+
+function invoke_cloud_backup {
+    param([string]$File)
+
+    if (-not $File) { Write-Host 'ERROR: Usage: shush cloud backup <file>' -ForegroundColor Red; exit 1 }
+    $backup = invoke_cloud_api_or_exit -Method 'GET' -Path '/api/backup'
+    ($backup | ConvertTo-Json -Depth 20) | Set-Content -LiteralPath $File -Encoding UTF8
+    Write-Host "Backup written: $File (token hashes + metadata only; no plaintext tokens exist server-side)"
+}
+
+function invoke_cloud_restore {
+    param([string]$File)
+
+    if (-not $File -or -not (Test-Path $File)) {
+        Write-Host 'ERROR: Usage: shush cloud restore <file> (file must exist)' -ForegroundColor Red
+        exit 1
+    }
+    try {
+        $document = Get-Content -LiteralPath $File -Raw | ConvertFrom-Json
+    } catch {
+        Write-Host "ERROR: '$File' is not valid JSON: $($_.Exception.Message)" -ForegroundColor Red
+        exit 1
+    }
+    $result = invoke_cloud_api_or_exit -Method 'POST' -Path '/api/restore' -Body $document
+    Write-Host "Restored $($result.imported) machine(s). Existing machine tokens keep working (hashes were restored, not reissued)."
+}
+
+function invoke_cloud_env {
+    param([string]$Provider, $Flags)
+
+    if (-not $Provider) { Write-Host 'ERROR: Usage: shush cloud env <provider> [--show]' -ForegroundColor Red; exit 1 }
+    $config = read_cloud_config_or_exit
+
+    $envVar = switch ($Provider) {
+        'openai' { 'OPENAI_API_KEY' }
+        'anthropic' { 'ANTHROPIC_API_KEY' }
+        'gemini' { 'GEMINI_API_KEY' }
+        default { $Provider.ToUpperInvariant() + '_API_KEY' }
+    }
+
+    $token = '<machine token>'
+    if ($Flags.show) {
+        $token = get_cloud_machine_token_or_exit
+    }
+
+    $plan = get_cloud_env_mappings -EnvVar $envVar -Provider $Provider -WorkerUrl $config.worker_url -Token $token
+    if (-not $plan.success) {
+        Write-Host "ERROR: $($plan.error.message)" -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "# Environment for '$Provider' through $($config.worker_url)"
+    foreach ($key in ($plan.data.values.Keys | Sort-Object)) {
+        Write-Host ('$env:{0} = ''{1}''' -f $key, $plan.data.values[$key])
+    }
+    foreach ($note in @($plan.data.notes)) {
+        Write-Host "# $note"
+    }
+    if (-not $Flags.show) {
+        Write-Host '# (--show prints the real machine token; prefer `shush run --cloud ...`, which never displays it)'
+    }
+}
+
+function invoke_cloud_open {
+    $config = read_cloud_config_or_exit
+    $code = invoke_cloud_api_or_exit -Method 'POST' -Path '/api/login-code'
+    $adminUrl = "$($config.worker_url)/admin#code=$($code.code)"
+    Write-Host "Opening admin UI (login code valid 2 minutes, single use)..."
+    try {
+        Start-Process $adminUrl
+    } catch {
+        Write-Host "Open this URL in a browser: $adminUrl"
+    }
+}
+
+function invoke_cloud_admin_token {
+    param($Flags)
+
+    if (-not $Flags.show) {
+        Write-Host 'The admin token is a live credential. Print it with: shush cloud admin-token --show'
+        exit 0
+    }
+    $token = get_cloud_admin_token_or_exit
+    Write-Host $token
+}
+
+function invoke_cloud_command {
+    # The whole tail after 'cloud' arrives unparsed ($promotionScope = none):
+    # $name holds the subcommand, $arguments everything after it.
+    $tokens = @()
+    if ($name) { $tokens += $name }
+    if ($null -ne $arguments) { $tokens += @($arguments) }
+
+    $parsed = parse_cloud_arguments -Tokens $tokens
+    if (-not $parsed.success) {
+        Write-Host "ERROR: $($parsed.error.message)" -ForegroundColor Red
+        exit 1
+    }
+    $positional = @($parsed.data.positional)
+    $flags = $parsed.data.flags
+
+    if ($positional.Count -eq 0) {
+        Write-Host 'Usage: shush cloud <deploy|status|secret|machine|backup|restore|env|open|admin-token>' -ForegroundColor Red
+        Write-Host '  deploy [--reset-admin]              deploy/refresh the worker in your CF account'
+        Write-Host '  status [--probe]                    machines, grants, providers, config version'
+        Write-Host '  secret set|delete <name>            provider keys as worker secrets (SK_<NAME>)'
+        Write-Host '  machine add <label> [--grant a,b] [--save]'
+        Write-Host '  machine list|revoke|rotate|disable|enable <id>'
+        Write-Host '  machine grant|ungrant <id> --grant <providers>'
+        Write-Host '  backup|restore <file>               hashes + metadata only'
+        Write-Host '  env <provider> [--show]             print client env for one provider'
+        Write-Host '  open                                admin UI via one-time login code'
+        Write-Host '  admin-token --show                  print the admin token'
+        exit 1
+    }
+
+    $sub = $positional[0].ToLowerInvariant()
+    $arg1 = if ($positional.Count -gt 1) { $positional[1] } else { '' }
+    $arg2 = if ($positional.Count -gt 2) { $positional[2] } else { '' }
+
+    switch ($sub) {
+        'deploy' { invoke_cloud_deploy -Flags $flags }
+        'status' { invoke_cloud_status -Flags $flags }
+        'secret' { invoke_cloud_secret -Action $arg1 -SecretName $arg2 -Flags $flags }
+        'machine' { invoke_cloud_machine -Action $arg1 -Target $arg2 -Flags $flags }
+        'backup' { invoke_cloud_backup -File $arg1 }
+        'restore' { invoke_cloud_restore -File $arg1 }
+        'env' { invoke_cloud_env -Provider $arg1 -Flags $flags }
+        'open' { invoke_cloud_open }
+        'admin-token' { invoke_cloud_admin_token -Flags $flags }
+        default {
+            Write-Host "ERROR: Unknown cloud subcommand '$sub'." -ForegroundColor Red
+            exit 1
+        }
+    }
+}
+
 if (-not $command -or $command -in @('-h', '--help', '/?', 'help')) {
     show_usage
     exit 0
@@ -1080,6 +1692,7 @@ try {
         'delete' { invoke_delete_command }
         'run' { invoke_run_command }
         'proxy' { invoke_proxy_command }
+        'cloud' { invoke_cloud_command }
         'protect' { invoke_protect_command }
         'unprotect' { invoke_unprotect_command }
         'enroll' { invoke_enroll_command }
