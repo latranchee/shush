@@ -52,14 +52,15 @@ In the new service-account window, run:
 
 ```powershell
 $env:PSModulePath = [Environment]::GetEnvironmentVariable('PSModulePath', 'Machine')
-.\backup_vault.ps1 -Action Backup -Vault Service -Path "C:\Users\$env:USERNAME\transfer.shushbak"
+.\backup_vault.ps1 -Action Backup -Vault Service -Path C:\Users\shush_svc\transfer.shushbak
 ```
 
 The new window inherits the launching shell's environment variables.
 `-ExecutionPolicy Bypass` covers the service account's default Restricted
 policy, and resetting `PSModulePath` stops Windows PowerShell 5.1 from trying to
 load PowerShell 7 modules. `USERPROFILE` and `TEMP` still point at the launching
-user, so pass an explicit archive path. The script moves `TEMP` into the
+user, so pass an explicit archive path inside the service profile. Adjust
+`shush_svc` if you chose another account name. The script moves `TEMP` into the
 service account's own profile on its own.
 
 The archive is written inside the service account's profile. Copy the resulting
