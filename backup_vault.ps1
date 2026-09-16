@@ -9,6 +9,25 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+# A window opened with Start-Process -Credential inherits the caller's
+# environment, so TEMP can point into another user's profile. Add-Type compiles
+# the credential interop there on first use; move TEMP into our own profile.
+function test_temp_writable {
+    try {
+        $probe = Join-Path $env:TEMP ([guid]::NewGuid().ToString('N'))
+        [IO.File]::WriteAllText($probe, '')
+        Remove-Item -LiteralPath $probe -Force
+        return $true
+    } catch { return $false }
+}
+$own_profile = [Environment]::GetFolderPath('UserProfile')
+if ($env:USERPROFILE -ne $own_profile -or -not (test_temp_writable)) {
+    $own_temp = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Temp'
+    if (-not (Test-Path -LiteralPath $own_temp)) { $null = New-Item -ItemType Directory -Path $own_temp }
+    $env:TEMP = $own_temp
+    $env:TMP = $own_temp
+    $env:USERPROFILE = $own_profile
+}
 Import-Module (Join-Path $PSScriptRoot 'modules\credential_store.psm1') -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot 'modules\vault_backup.psm1') -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot 'modules\admin_pipe.psm1') -DisableNameChecking
@@ -114,7 +133,7 @@ try {
     # Only intentional errors get details; external errors might contain values.
     if ($_.Exception -is [System.Management.Automation.RuntimeException] -and $_.CategoryInfo.Category -eq 'OperationStopped') {
         Write-Host ("ERROR: {0}" -f $_.Exception.Message) -ForegroundColor Red
-    } else { Write-Host 'ERROR: Backup/restore failed. Check the file path, permissions, and vault configuration.' -ForegroundColor Red }
+    } else { Write-Host ('ERROR: Backup/restore failed ({0} at line {1}). Check the file path, permissions, and vault configuration.' -f $_.Exception.GetType().Name, $_.InvocationInfo.ScriptLineNumber) -ForegroundColor Red }
     if ($restored.Count -gt 0) { Write-Host ("Already restored: {0}" -f ($restored -join ', ')) }
     exit 1
 } finally {
