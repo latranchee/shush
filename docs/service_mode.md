@@ -104,6 +104,10 @@ local (`set <name> --local`), consciously.
 
 ## Recovery and caveats
 
+For a planned move to another PC, see [encrypted backup and transfer](backup.md).
+Export requires an interactive login as the service account using its saved
+password. No export operation is added to the management pipe.
+
 - **Do not let an admin reset the service account's password.** A reset
   (as opposed to a change by the account itself) destroys its DPAPI keys
   and with them every secret in the service vault. If that happens:
