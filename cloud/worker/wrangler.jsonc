@@ -8,7 +8,7 @@
   "kv_namespaces": [
     {
       "binding": "SHUSH_KV",
-      "id": "SHUSH_KV_ID_PLACEHOLDER"
+      "id": "ca8df347187e472882cf76b84bad0947"
     }
   ],
   "durable_objects": {
