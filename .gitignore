@@ -4,3 +4,4 @@ service_config.json
 logs/
 vault_keys.json
 vault_keys.json.tmp
+*.shushbak
