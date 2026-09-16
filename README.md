@@ -75,6 +75,19 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 
 ## Commands
 
+For encrypted backup and transfer between PCs, use `backup_vault.ps1`:
+
+```powershell
+.\backup_vault.ps1 -Action Backup -Vault Local -Path .\transfer.shushbak
+.\backup_vault.ps1 -Action Restore -Vault Local -Path .\transfer.shushbak
+```
+
+Both prompt privately for the archive passphrase. Service-vault backup requires
+an interactive session as the service account with its saved password; service
+restore uses the existing write-only pipe. See [backup and transfer](docs/backup.md)
+for setup, collision handling, and limitations.
+
+
 | Command | Purpose |
 |---------|---------|
 | `set <name> [--from-stdin] [--force]` | Store a secret (secure prompt; `--force` to overwrite) |

@@ -140,7 +140,19 @@ this means for you as an agent:
 - Setup/teardown is `install_proxy_service.ps1` (needs elevation - ask the
   user to run it). Full docs: `docs/service_mode.md`.
 
+## Portable backup and restore
+
+`backup_vault.ps1 -Action Backup|Restore -Vault Local|Service -Path <file>`:
+encrypted archives, interactive passphrase only. See `docs/backup.md`.
+Service export requires the human to log in as the service account with the
+saved password. Never retrieve or reset that password, launch an export of real
+secrets from an agent session, or extend the write-only pipe with value export.
+Service restore runs as the authorized ordinary user. Existing values are kept;
+`-SkipExisting` explicitly imports only missing names. Protected local values
+are unsupported. Tests must use synthetic credentials only.
+
 ## Protected secrets (shared machines)
+
 
 If the user is on a public or shared computer, a stored secret is readable by
 anyone who can act as their Windows user. `protect` encrypts it at rest so

@@ -9,3 +9,4 @@ cloud/worker/node_modules/
 cloud/worker/.wrangler/
 cloud/worker/dist/
 .playwright-mcp/
+*.shushbak
