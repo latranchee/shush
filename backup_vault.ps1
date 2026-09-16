@@ -20,13 +20,20 @@ function test_temp_writable {
         return $true
     } catch { return $false }
 }
-$own_profile = [Environment]::GetFolderPath('UserProfile')
-if ($env:USERPROFILE -ne $own_profile -or -not (test_temp_writable)) {
-    $own_temp = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Temp'
-    if (-not (Test-Path -LiteralPath $own_temp)) { $null = New-Item -ItemType Directory -Path $own_temp }
+# GetFolderPath expands the inherited USERPROFILE and returns '' for folders
+# this account cannot see, so resolve the profile from ProfileList by SID.
+$own_sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$profile_key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey("SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$own_sid")
+$own_profile = if ($profile_key) { [Environment]::ExpandEnvironmentVariables([string]$profile_key.GetValue('ProfileImagePath')) } else { '' }
+if ($own_profile -and ($env:USERPROFILE -ne $own_profile -or -not (test_temp_writable))) {
+    $own_local = [IO.Path]::Combine($own_profile, 'AppData', 'Local')
+    $own_temp = [IO.Path]::Combine($own_local, 'Temp')
+    $null = [IO.Directory]::CreateDirectory($own_temp)
     $env:TEMP = $own_temp
     $env:TMP = $own_temp
     $env:USERPROFILE = $own_profile
+    $env:LOCALAPPDATA = $own_local
+    $env:APPDATA = [IO.Path]::Combine($own_profile, 'AppData', 'Roaming')
 }
 Import-Module (Join-Path $PSScriptRoot 'modules\credential_store.psm1') -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot 'modules\vault_backup.psm1') -DisableNameChecking
