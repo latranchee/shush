@@ -44,15 +44,23 @@ $config = Get-Content .\service_config.json -Raw | ConvertFrom-Json
 $account = "$env:COMPUTERNAME\$($config.account)"
 $repo = $PWD.Path
 $credential = Get-Credential -UserName $account -Message 'Enter the saved shush service account password'
-Start-Process powershell.exe -Credential $credential -LoadUserProfile -WorkingDirectory $repo -ArgumentList '-NoProfile -NoExit' -WindowStyle Normal
+Start-Process powershell.exe -Credential $credential -LoadUserProfile -WorkingDirectory $repo -ArgumentList '-NoProfile -NoExit -ExecutionPolicy Bypass' -WindowStyle Normal
 $credential = $null
 ```
 
 In the new service-account window, run:
 
 ```powershell
-.\backup_vault.ps1 -Action Backup -Vault Service -Path "$env:USERPROFILE\transfer.shushbak"
+$env:PSModulePath = [Environment]::GetEnvironmentVariable('PSModulePath', 'Machine')
+.\backup_vault.ps1 -Action Backup -Vault Service -Path "C:\Users\$env:USERNAME\transfer.shushbak"
 ```
+
+The new window inherits the launching shell's environment variables.
+`-ExecutionPolicy Bypass` covers the service account's default Restricted
+policy, and resetting `PSModulePath` stops Windows PowerShell 5.1 from trying to
+load PowerShell 7 modules. `USERPROFILE` and `TEMP` still point at the launching
+user, so pass an explicit archive path. The script moves `TEMP` into the
+service account's own profile on its own.
 
 The archive is written inside the service account's profile. Copy the resulting
 encrypted file out using an administrator session, then transfer it to the
